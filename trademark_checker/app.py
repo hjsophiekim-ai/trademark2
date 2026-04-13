@@ -806,8 +806,8 @@ elif st.session_state.step == 4:
     with col1:
         st.metric("검토 상품군", f"{len(field_reports)}개")
     with col2:
-        high_risk_fields = sum(1 for report in field_reports if report.get("score", 0) < 50)
-        st.metric("주의 상품군", f"{high_risk_fields}개")
+        high_risk_fields = sum(1 for report in field_reports if report.get("actual_risk_prior_count", 0) > 0)
+        st.metric("실제 충돌 위험 상품군", f"{high_risk_fields}개")
     with col3:
         st.metric("조어상표 여부", "예" if st.session_state.is_coined else "아니오")
     with col4:
@@ -842,12 +842,29 @@ elif st.session_state.step == 4:
         with sub1:
             st.metric("전체 검색 건수", f"{total_results}건")
         with sub2:
-            high_risk = sum(1 for row in results if row.get("confusion_score", 0) >= 65)
-            st.metric("주의 선행상표", f"{high_risk}건")
+            st.metric("필터 통과 건수", f"{report.get('filtered_prior_count', report.get('prior_count', 0))}건")
         with sub3:
-            st.metric("선택 코드", f"{len(report.get('selected_codes', []))}개")
+            st.metric("실제 충돌 위험 건수", f"{report.get('actual_risk_prior_count', 0)}건")
         with sub4:
-            st.metric("필터 통과 후보", f"{report.get('prior_count', 0)}건")
+            st.metric("제외된 후보 건수", f"{report.get('excluded_prior_count', len(excluded_results))}건")
+
+        st.markdown("### 점수 산정 해설")
+        score_explanation = report.get("score_explanation", {})
+        st.markdown(
+            f"""
+            <div class="card">
+                <b>최종 점수 {report.get('score', 0)}% (원점수 {score_explanation.get('raw_score', report.get('score', 0))}%)</b><br>
+                <small style="color:#546E7A;">{score_explanation.get('summary', '-')}</small>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        for note in score_explanation.get("notes", []):
+            st.markdown(f"- {note}")
+        if report.get("filtered_prior_count", 0) == 0:
+            st.markdown("- 검색 결과가 있어도 상품 유사성 필터 통과 선행상표가 0건이면 상대적 거절사유 리스크를 매우 낮게 봅니다.")
+        if report.get("distinctiveness") in {"식별력 약함", "거절 가능성 큼"} and report.get("filtered_prior_count", 0) == 0:
+            st.markdown("- 식별력 약함은 별도 축으로 반영되며, 충돌 후보가 없으면 등록 가능성이 여전히 높게 나올 수 있습니다.")
 
         st.markdown("### 식별력 판단")
         distinctiveness = report.get("distinctiveness_analysis", {})
@@ -880,6 +897,7 @@ elif st.session_state.step == 4:
             """,
             unsafe_allow_html=True,
         )
+        st.markdown(f"- {product_analysis.get('exclusion_reason_summary', report.get('exclusion_reason_summary', '-'))}")
 
         st.markdown("### 표장 유사성 검토 결과")
         st.markdown(
@@ -990,7 +1008,7 @@ elif st.session_state.step == 4:
             st.markdown(
                 f"""
                 <div class="tip-box" style="margin-top:12px;">
-                전혀 다른 상품영역으로 판단된 후보 {len(excluded_results)}건은 강한 감점에 반영하지 않았습니다.
+                검색 결과가 있었지만 상품 유사성 검토에서 제외된 후보 {len(excluded_results)}건은 최종 점수와 top_prior에 반영하지 않았습니다.
                 예: {', '.join(row['trademarkName'] for row in excluded_results[:3])}
                 </div>
                 """,

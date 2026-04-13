@@ -37,6 +37,18 @@ ECONOMIC_LINKS = {
     frozenset({"31", "44"}),
     frozenset({"39", "43"}),
 }
+GROUP_ALIAS = {
+    "same_code": "group_exact_code",
+    "same_class": "group_same_class",
+    "exception": "group_related_market",
+    "excluded": "group_irrelevant",
+}
+GROUP_LABEL = {
+    "group_exact_code": "동일 유사군코드",
+    "group_same_class": "동일 류",
+    "group_related_market": "경제적 견련성 있는 타 류",
+    "group_irrelevant": "무관한 타 류",
+}
 
 
 def strip_html(text: str) -> str:
@@ -306,6 +318,7 @@ def _product_similarity(item: dict, context: dict) -> dict:
     if code_match:
         return {
             "bucket": "same_code",
+            "group": GROUP_ALIAS["same_code"],
             "label": "동일 유사군코드",
             "score": 95,
             "include": True,
@@ -313,13 +326,11 @@ def _product_similarity(item: dict, context: dict) -> dict:
         }
 
     if shared_classes:
-        base_score = 62
-        if any(code.startswith("S") for code in selected_codes):
-            base_score += 4
         return {
             "bucket": "same_class",
+            "group": GROUP_ALIAS["same_class"],
             "label": "동일 류 검토군",
-            "score": base_score,
+            "score": 58,
             "include": True,
             "reason": f"선택 류 {', '.join(selected_classes)}와 선행상표 류 {', '.join(shared_classes)}가 겹칩니다.",
         }
@@ -327,14 +338,16 @@ def _product_similarity(item: dict, context: dict) -> dict:
     if _has_economic_link(selected_classes, item_classes):
         return {
             "bucket": "exception",
+            "group": GROUP_ALIAS["exception"],
             "label": "타 류 예외군",
-            "score": 38,
+            "score": 28,
             "include": True,
             "reason": "다른 류이지만 판매업·서비스업 등 경제적 견련성이 있어 예외 검토군으로 남깁니다.",
         }
 
     return {
         "bucket": "excluded",
+        "group": GROUP_ALIAS["excluded"],
         "label": "검토 제외",
         "score": 0,
         "include": False,
@@ -429,6 +442,95 @@ def _score_from_analysis(
     return max(0, min(100, int(round(score))))
 
 
+def _group_counts(bucket_counts: dict) -> dict:
+    return {
+        GROUP_ALIAS["same_code"]: bucket_counts.get("same_code", 0),
+        GROUP_ALIAS["same_class"]: bucket_counts.get("same_class", 0),
+        GROUP_ALIAS["exception"]: bucket_counts.get("exception", 0),
+        GROUP_ALIAS["excluded"]: bucket_counts.get("excluded", 0),
+    }
+
+
+def _grouped_priors(included: list[dict], excluded: list[dict]) -> dict:
+    grouped = {alias: [] for alias in GROUP_LABEL}
+    for item in included + excluded:
+        grouped[item.get("group_name", GROUP_ALIAS.get(item.get("product_bucket", "excluded"), GROUP_ALIAS["excluded"]))].append(item)
+    return grouped
+
+
+def _build_exclusion_summary(excluded: list[dict]) -> str:
+    if not excluded:
+        return "상품 유사성 검토에서 제외된 후보가 없습니다."
+    reasons = {}
+    for item in excluded:
+        reason = item.get("product_reason", "상품 관련성 부족")
+        reasons[reason] = reasons.get(reason, 0) + 1
+    summary = ", ".join(f"{reason} {count}건" for reason, count in list(reasons.items())[:3])
+    return (
+        f"검색 결과 {len(excluded)}건은 상품 유사성 필터에서 제외되어 최종 점수와 top_prior에는 반영하지 않았습니다. "
+        f"주요 제외 사유: {summary}"
+    )
+
+
+def _calibrate_score(
+    raw_score: int,
+    included: list[dict],
+    distinctiveness: dict,
+    is_coined: bool,
+) -> tuple[int, list[str]]:
+    explanations = []
+    filtered_count = len(included)
+    actual_risk_count = sum(1 for item in included if item.get("confusion_score", 0) >= 65)
+    same_code_high = [
+        item
+        for item in included
+        if item.get("product_bucket") == "same_code"
+        and max(item.get("mark_similarity", 0), item.get("phonetic_similarity", 0)) >= 85
+    ]
+    same_class_medium = [
+        item
+        for item in included
+        if item.get("product_bucket") == "same_class" and item.get("mark_similarity", 0) >= 60
+    ]
+    related_only = bool(included) and all(item.get("product_bucket") == "exception" for item in included)
+
+    calibrated = raw_score
+
+    if filtered_count == 0:
+        if distinctiveness["level"] == "high":
+            low, high = 60, 72
+            explanations.append("식별력 자체가 강하게 약해 충돌 후보가 없어도 60~72 구간에서 점수를 형성했습니다.")
+        elif distinctiveness["level"] == "medium":
+            low, high = 72, 82
+            explanations.append("식별력 약함은 있으나 상품 유사성 필터 통과 선행상표가 없어 72~82 구간으로 보정했습니다.")
+        elif is_coined:
+            low, high = 88, 95
+            explanations.append("조어상표이고 상품 유사성 필터 통과 선행상표가 0건이어서 88~95 구간으로 캘리브레이션했습니다.")
+        else:
+            low, high = 82, 90
+            explanations.append("식별력 보통 이상이며 상품 유사성 필터 통과 선행상표가 0건이어서 82~90 구간으로 캘리브레이션했습니다.")
+        calibrated = min(max(calibrated, low), high)
+        return calibrated, explanations
+
+    if same_code_high:
+        calibrated = min(calibrated, 48)
+        explanations.append("동일 유사군코드에서 호칭/표장 유사도가 높은 충돌 후보가 있어 50 이하 구간까지 낮췄습니다.")
+    elif same_class_medium:
+        calibrated = min(max(calibrated, 55), 75)
+        explanations.append("동일 류 보조 검토군에서 표장 유사도가 중간 이상이라 55~75 구간의 중간 리스크로 보정했습니다.")
+    elif related_only:
+        lower_bound = 60 if distinctiveness["level"] == "high" else 70
+        calibrated = max(calibrated, lower_bound)
+        explanations.append("타 류 예외군만 존재해 원칙적으로 과도한 감점을 막고 보조 경고 수준으로 유지했습니다.")
+
+    if filtered_count and actual_risk_count == 0:
+        explanations.append("필터 통과 후보는 있으나 실제 충돌 위험도는 낮아 점수 하락을 제한했습니다.")
+    elif actual_risk_count:
+        explanations.append(f"상품 유사성 필터 통과 후보 {filtered_count}건 중 실제 충돌 위험 후보는 {actual_risk_count}건입니다.")
+
+    return calibrated, explanations
+
+
 def calculate_score(
     trademark_name: str,
     results: List[dict],
@@ -501,6 +603,7 @@ def evaluate_registration(
         payload = {
             **item,
             "product_bucket": product["bucket"],
+            "group_name": product["group"],
             "product_similarity_label": product["label"],
             "product_similarity_score": product["score"],
             "product_reason": product["reason"],
@@ -515,8 +618,12 @@ def evaluate_registration(
     included.sort(key=lambda row: (row["confusion_score"], row["mark_similarity"], row["similarity"]), reverse=True)
     excluded.sort(key=lambda row: row["similarity"], reverse=True)
 
-    score = _score_from_analysis(trademark_name, included, distinctiveness, is_coined, trademark_type)
+    raw_score = _score_from_analysis(trademark_name, included, distinctiveness, is_coined, trademark_type)
+    score, calibration_notes = _calibrate_score(raw_score, included, distinctiveness, is_coined)
     band = get_score_band(score)
+    grouped_counts = _group_counts(bucket_counts)
+    actual_risk_count = sum(1 for item in included if item.get("confusion_score", 0) >= 65)
+    exclusion_reason_summary = _build_exclusion_summary(excluded)
 
     if included:
         top = included[0]
@@ -543,16 +650,24 @@ def evaluate_registration(
         )
     else:
         signals.append("상품 관련성이 없는 타 류 후보는 강한 감점에 반영하지 않았습니다.")
+    signals.extend(calibration_notes)
 
     return {
         "score": score,
+        "raw_score": raw_score,
         "band": band,
         "signals": signals,
         "top_prior": included[:5],
         "included_priors": included,
         "excluded_priors": excluded[:10],
         "prior_count": len(included),
+        "filtered_prior_count": len(included),
+        "excluded_prior_count": len(excluded),
+        "actual_risk_prior_count": actual_risk_count,
         "total_prior_count": len(normalized_priors),
+        "group_counts": grouped_counts,
+        "grouped_priors": _grouped_priors(included[:20], excluded[:20]),
+        "exclusion_reason_summary": exclusion_reason_summary,
         "distinctiveness": distinctiveness["label"],
         "distinctiveness_analysis": distinctiveness,
         "product_similarity_analysis": {
@@ -564,16 +679,28 @@ def evaluate_registration(
                 f"{bucket_counts['excluded']}건은 감점에서 제외했습니다."
             ),
             "bucket_counts": bucket_counts,
+            "group_counts": grouped_counts,
+            "filtered_prior_count": len(included),
+            "excluded_prior_count": len(excluded),
+            "exclusion_reason_summary": exclusion_reason_summary,
         },
         "mark_similarity_analysis": {
             "summary": (
                 f"표장 유사도는 상품 유사성 필터를 통과한 {len(included)}건에 대해서만 산출했습니다."
                 if included
                 else "상품 유사성 필터를 통과한 후보가 없어 외관·호칭·관념 유사도는 참고 수준으로만 보았습니다."
-            )
+            ),
+            "actual_risk_prior_count": actual_risk_count,
         },
         "confusion_analysis": {
             "summary": confusion_summary,
             "highest_confusion_score": included[0]["confusion_score"] if included else 0,
+            "actual_risk_prior_count": actual_risk_count,
+        },
+        "score_explanation": {
+            "summary": " / ".join(calibration_notes) if calibration_notes else "상품 유사성 필터와 식별력 축을 분리해 점수를 산정했습니다.",
+            "raw_score": raw_score,
+            "final_score": score,
+            "notes": calibration_notes,
         },
     }

@@ -86,6 +86,24 @@ def _render_single_report(pdf: KoreanPDF, content_width: float, payload: dict, t
     pdf.ln(2)
 
     pdf.kfont(12, bold=True)
+    pdf.cell(0, 8, "점수 산정 해설", new_x="LMARGIN", new_y="NEXT")
+    pdf.kfont(10)
+    score_explanation = payload.get("score_explanation", {})
+    _write_lines(
+        pdf,
+        content_width,
+        [
+            (
+                f"최종 점수 {payload.get('score', 0)}% "
+                f"(원점수 {score_explanation.get('raw_score', payload.get('score', 0))}%)"
+            ),
+            score_explanation.get("summary", "상품 유사성 필터와 식별력 축을 분리해 점수를 산정했습니다."),
+        ]
+        + [f"- {note}" for note in score_explanation.get("notes", [])],
+    )
+    pdf.ln(2)
+
+    pdf.kfont(12, bold=True)
     pdf.cell(0, 8, "상품 유사성 검토 결과", new_x="LMARGIN", new_y="NEXT")
     pdf.kfont(10)
     product_analysis = payload.get("product_similarity_analysis", {})
@@ -103,6 +121,8 @@ def _render_single_report(pdf: KoreanPDF, content_width: float, payload: dict, t
             ),
         ],
     )
+    if product_analysis.get("exclusion_reason_summary"):
+        _write_lines(pdf, content_width, [product_analysis["exclusion_reason_summary"]])
     pdf.ln(2)
 
     pdf.kfont(12, bold=True)

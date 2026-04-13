@@ -61,9 +61,9 @@ def get_improvements(
     if sale_codes:
         code_suggestions.append(
             {
-                "description": f"{', '.join(sale_codes)} 제외 후 핵심 상품 코드만 유지",
-                "reason": "판매업 코드를 빼면 충돌 범위가 줄어들 수 있어요.",
-                "expected_score": min(95, current_score + 10),
+                "description": f"{', '.join(sale_codes)}는 실제 운영 범위와 일치할 때 유지, 필요 없으면 분리 출원 검토",
+                "reason": "판매업 코드는 보호 범위 확대 목적이어서 기본적으로 중립입니다. 실제 충돌 후보가 있을 때만 분리 전략을 검토하세요.",
+                "expected_score": min(95, current_score + 4),
             }
         )
 

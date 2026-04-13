@@ -142,6 +142,57 @@ class ScoringCalibrationTests(unittest.TestCase):
         self.assertEqual(result["filtered_prior_count"], 1)
         self.assertEqual(result["group_counts"]["group_exact_code"], 1)
 
+    def test_same_class_only_match_stays_in_supplementary_range(self) -> None:
+        result = evaluate_registration(
+            trademark_name="Lexai",
+            trademark_type="문자만",
+            is_coined=True,
+            selected_classes=["9류"],
+            selected_codes=["G0901"],
+            prior_items=[
+                {
+                    "applicationNumber": "7",
+                    "trademarkName": "LEXAI",
+                    "registerStatus": "등록",
+                    "classificationCode": "9",
+                    "applicantName": "G",
+                }
+            ],
+            selected_fields=[{"class_no": "9류", "description": "전자기기/소프트웨어", "example": "앱"}],
+            specific_product="소프트웨어",
+        )
+
+        self.assertEqual(result["filtered_prior_count"], 1)
+        self.assertEqual(result["group_counts"]["group_same_class"], 1)
+        self.assertGreaterEqual(result["score"], 55)
+        self.assertLessEqual(result["score"], 75)
+
+    def test_same_sales_code_is_only_limitedly_reflected(self) -> None:
+        result = evaluate_registration(
+            trademark_name="Lexai",
+            trademark_type="문자만",
+            is_coined=True,
+            selected_classes=["35류"],
+            selected_codes=["S2021"],
+            prior_items=[
+                {
+                    "applicationNumber": "8",
+                    "trademarkName": "LEXAI",
+                    "registerStatus": "등록",
+                    "classificationCode": "35",
+                    "similarityGroupCode": "S2021",
+                    "applicantName": "H",
+                }
+            ],
+            selected_fields=[{"class_no": "35류", "description": "가구 판매업", "example": "온라인 스토어"}],
+            specific_product="가구 판매업",
+        )
+
+        self.assertEqual(result["filtered_prior_count"], 1)
+        self.assertEqual(result["group_counts"]["group_exact_code"], 0)
+        self.assertEqual(result["group_counts"]["group_same_class"], 1)
+        self.assertGreaterEqual(result["score"], 55)
+
 
 if __name__ == "__main__":
     unittest.main()

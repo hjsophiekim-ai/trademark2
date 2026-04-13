@@ -98,6 +98,10 @@ def _status_weight(status: str) -> float:
     return 0.55
 
 
+def _is_sales_code(code: str) -> bool:
+    return str(code or "").upper().startswith("S")
+
+
 def similarity_percent(source: str, target: str) -> int:
     left = _normalize(source)
     right = _normalize(target)
@@ -187,6 +191,8 @@ def _selected_context(
     return {
         "classes": class_list,
         "codes": codes,
+        "goods_codes": [code for code in codes if not _is_sales_code(code)],
+        "sales_codes": [code for code in codes if _is_sales_code(code)],
         "code_meta": code_meta,
         "tokens": set(token for fragment in text_fragments for token in _tokenize(fragment)),
         "specific_product": specific_product,
@@ -307,32 +313,77 @@ def _has_economic_link(selected_classes: list[str], item_classes: list[str]) -> 
     return False
 
 
+def _item_code_tokens(code: str) -> set[str]:
+    if not code:
+        return set()
+    row = get_code_metadata(code)
+    if not row:
+        return set()
+    fragments = [row.get("name", ""), row.get("설명", ""), row.get("기준상품", "")]
+    return {token for fragment in fragments for token in _tokenize(fragment)}
+
+
 def _product_similarity(item: dict, context: dict) -> dict:
     selected_classes = context["classes"]
     selected_codes = context["codes"]
+    selected_goods_codes = context["goods_codes"]
     item_classes = item.get("classes", [])
     shared_classes = [class_no for class_no in item_classes if class_no in selected_classes]
     explicit_code = item.get("similarityGroupCode", "")
     code_match = explicit_code in selected_codes if explicit_code else False
 
     if code_match:
+        if _is_sales_code(explicit_code):
+            return {
+                "bucket": "same_class",
+                "group": GROUP_ALIAS["same_class"],
+                "label": "동일 판매업 코드(제한 반영)",
+                "score": 36,
+                "penalty_weight": 0.48,
+                "strict_same_code": False,
+                "include": True,
+                "reason": f"선택 판매업 코드 {explicit_code}와 일치하지만 문서 기준에 따라 제한적으로만 반영합니다.",
+            }
         return {
             "bucket": "same_code",
             "group": GROUP_ALIAS["same_code"],
             "label": "동일 유사군코드",
             "score": 95,
+            "penalty_weight": 1.7,
+            "strict_same_code": True,
             "include": True,
             "reason": f"선택 유사군코드 {explicit_code}와 직접 일치합니다.",
         }
 
     if shared_classes:
+        item_tokens = _item_code_tokens(explicit_code)
+        overlap_tokens = sorted(context["tokens"] & item_tokens)
+        if explicit_code and item_tokens and overlap_tokens and explicit_code not in selected_goods_codes:
+            return {
+                "bucket": "same_class",
+                "group": GROUP_ALIAS["same_class"],
+                "label": "동일 류 인접 상품군",
+                "score": 54,
+                "penalty_weight": 0.92,
+                "strict_same_code": False,
+                "include": True,
+                "reason": (
+                    f"동일 류이며 유사군코드는 다르지만 상품 문맥이 맞닿아 있어 보조 검토군으로 포함합니다: "
+                    + ", ".join(overlap_tokens[:3])
+                ),
+            }
         return {
             "bucket": "same_class",
             "group": GROUP_ALIAS["same_class"],
             "label": "동일 류 검토군",
-            "score": 58,
+            "score": 40,
+            "penalty_weight": 0.68,
+            "strict_same_code": False,
             "include": True,
-            "reason": f"선택 류 {', '.join(selected_classes)}와 선행상표 류 {', '.join(shared_classes)}가 겹칩니다.",
+            "reason": (
+                f"선택 류 {', '.join(selected_classes)}와 선행상표 류 {', '.join(shared_classes)}가 겹치지만 "
+                "문서 기준상 동일 류만으로는 자동 충돌로 보지 않아 보조 검토군으로만 반영합니다."
+            ),
         }
 
     if _has_economic_link(selected_classes, item_classes):
@@ -340,7 +391,9 @@ def _product_similarity(item: dict, context: dict) -> dict:
             "bucket": "exception",
             "group": GROUP_ALIAS["exception"],
             "label": "타 류 예외군",
-            "score": 28,
+            "score": 24,
+            "penalty_weight": 0.18,
+            "strict_same_code": False,
             "include": True,
             "reason": "다른 류이지만 판매업·서비스업 등 경제적 견련성이 있어 예외 검토군으로 남깁니다.",
         }
@@ -350,6 +403,8 @@ def _product_similarity(item: dict, context: dict) -> dict:
         "group": GROUP_ALIAS["excluded"],
         "label": "검토 제외",
         "score": 0,
+        "penalty_weight": 0.0,
+        "strict_same_code": False,
         "include": False,
         "reason": "선택한 류·유사군코드와 직접적인 상품 관련성이 낮아 점수 반영에서 제외합니다.",
     }
@@ -418,11 +473,11 @@ def _score_from_analysis(
         score -= 8
 
     for item in candidates:
-        group_weight = {
+        group_weight = item.get("product_penalty_weight", {
             "same_code": 1.7,
             "same_class": 1.4,
             "exception": 0.22,
-        }.get(item["product_bucket"], 0.0)
+        }.get(item["product_bucket"], 0.0))
         penalty = (
             item["mark_similarity"] / 100
             * item["product_similarity_score"] / 100
@@ -485,12 +540,15 @@ def _calibrate_score(
         item
         for item in included
         if item.get("product_bucket") == "same_code"
+        and item.get("strict_same_code", False)
         and max(item.get("mark_similarity", 0), item.get("phonetic_similarity", 0)) >= 85
     ]
     same_class_medium = [
         item
         for item in included
-        if item.get("product_bucket") == "same_class" and item.get("mark_similarity", 0) >= 60
+        if item.get("product_bucket") == "same_class"
+        and item.get("product_similarity_score", 0) >= 40
+        and item.get("mark_similarity", 0) >= 70
     ]
     related_only = bool(included) and all(item.get("product_bucket") == "exception" for item in included)
 
@@ -606,7 +664,9 @@ def evaluate_registration(
             "group_name": product["group"],
             "product_similarity_label": product["label"],
             "product_similarity_score": product["score"],
+            "product_penalty_weight": product["penalty_weight"],
             "product_reason": product["reason"],
+            "strict_same_code": product["strict_same_code"],
         }
         bucket_counts[product["bucket"]] += 1
         if not product["include"]:

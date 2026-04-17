@@ -42,13 +42,15 @@ STATUS_SUCCESS_HITS = "success_with_hits"
 STATUS_SUCCESS_ZERO = "success_zero_hits"
 STATUS_TRANSPORT_ERROR = "transport_error"
 STATUS_PARSE_ERROR = "parse_error"
+STATUS_DETAIL_PARSE_ERROR = "detail_parse_error"
 STATUS_BLOCKED = "blocked_or_unexpected_page"
 
 QUERY_MODE_LABELS = {
+    "primary_sc_only": "TN + primary SC",
     "primary_sc": "TN + class + primary SC",
     "class_only": "TN + class",
-    "related_sc": "TN + class + related SC",
-    "retail_sc": "TN + class + retail SC",
+    "related_sc_only": "TN + related SC",
+    "retail_sc_only": "TN + retail SC",
     "same_class_fallback": "TN + class fallback",
     "text_fallback": "TN broad fallback",
 }
@@ -75,6 +77,29 @@ def _normalize_name_key(value: str) -> str:
 def _normalize_class_no(value: str | int | None) -> str:
     digits = re.findall(r"\d+", str(value or ""))
     return str(int(digits[0])) if digits else ""
+
+
+def _search_mode_for_query_mode(query_mode: str) -> str:
+    if query_mode in {"class_only", "same_class_fallback"}:
+        return "class"
+    if query_mode in {"primary_sc_only", "primary_sc", "related_sc_only", "retail_sc_only"}:
+        return "sc"
+    return "mixed"
+
+
+def dedupe_search_candidates(items: list[dict]) -> list[dict]:
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[dict] = []
+    for item in items:
+        app_no = str(item.get("applicationNumber", "")).strip()
+        reg_no = str(item.get("registrationNumber", "")).strip()
+        name = _normalize_name_key(item.get("trademarkName", ""))
+        key = (app_no, reg_no, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
 
 
 def _parse_similarity_codes_from_html(html: str) -> list[str]:
@@ -118,18 +143,37 @@ def _parse_designated_items_from_html(html: str, ann: str) -> list[dict]:
         for row in rows:
             cols = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
             if len(cols) >= 3:
-                # 류, 상품명, 유사군코드 순서 (KIPRIS 표준)
-                class_no = re.sub(r'<[^>]+>', '', cols[1]).strip()
-                label = re.sub(r'<[^>]+>', '', cols[2]).strip()
-                sc_text = re.sub(r'<[^>]+>', '', cols[3]).strip()
-                sc_codes = re.findall(r'[GS][0-9]{2}[0-9]{2,}', sc_text)
+                # KIPRIS 상세페이지 지정상품 테이블 구조 대응
+                # 보통: 번호(0), 류(1), 유사군코드(2), 지정상품(3) 또는 
+                # 번호(0), 류(1), 지정상품(2), 유사군코드(3)
+                
+                c1 = re.sub(r'<[^>]+>', '', cols[1]).strip() # 류 후보
+                c2 = re.sub(r'<[^>]+>', '', cols[2]).strip() # SC 또는 상품명 후보
+                c3 = re.sub(r'<[^>]+>', '', cols[3]).strip() if len(cols) > 3 else "" # SC 또는 상품명 후보
+                
+                # 유사군코드 패턴([GS]\d+)이 어디 있는지 확인
+                sc_in_c2 = re.findall(r'[GS][0-9]{2}[0-9]{2,}', c2)
+                sc_in_c3 = re.findall(r'[GS][0-9]{2}[0-9]{2,}', c3)
+                
+                if sc_in_c2:
+                    sc_codes = sc_in_c2
+                    label = c3 if c3 else c2 # c2에 코드만 있으면 c3가 상품명, 아니면 c2 자체가 상품명 겸용일 수 있음
+                elif sc_in_c3:
+                    sc_codes = sc_in_c3
+                    label = c2
+                else:
+                    # 코드를 못 찾으면 행 전체에서 검색
+                    sc_codes = re.findall(r'[GS][0-9]{2}[0-9]{2,}', row)
+                    label = c2 if c2 else c1
+                
+                class_no = c1 if c1.isdigit() else ""
                 
                 if label and sc_codes:
                     items.append({
                         "prior_item_label": unescape(label),
                         "prior_class_no": class_no,
                         "prior_similarity_codes": sc_codes,
-                        "prior_item_type": "service" if "업" in label or int(class_no or 0) >= 35 else "goods",
+                        "prior_item_type": "service" if "업" in label or (class_no.isdigit() and int(class_no) >= 35) else "goods",
                         "source_page_or_source_field": f"kipris_detail_api:{ann}",
                         "parsing_confidence": "high"
                     })
@@ -381,7 +425,7 @@ def fetch_trademark_detail(ann: str) -> dict:
             "msg": f"Detail fetch failed: {str(e)}"
         }
 
-def enrich_search_results_with_item_details(items: list[dict]) -> list[dict]:
+def enrich_search_results_with_item_details(items: list[dict]) -> dict:
     """선행상표 목록에 상세 정보(지정상품/유사군코드)를 연동한다.
     
     각 선행상표에 대해 KIPRIS '상표지정상품조회' 상세 페이지를 호출하여
@@ -393,6 +437,8 @@ def enrich_search_results_with_item_details(items: list[dict]) -> list[dict]:
     - same_class_only vs exact_primary_overlap 구분이 가능하도록 SC 코드 수집
     """
     enriched: list[dict] = []
+    detail_parse_count = 0
+    detail_parse_error_count = 0
     MAX_DETAIL_FETCH = 10  # 상위 후보들만 상세 조회 (KIPRIS 차단 방지)
     
     for idx, item in enumerate(items):
@@ -411,15 +457,21 @@ def enrich_search_results_with_item_details(items: list[dict]) -> list[dict]:
                 html_sc_codes = detail.get("sc_codes", [])
                 html_designated_items = detail.get("designated_items", [])
                 
-                # HTML에서 추출한 SC 코드가 있으면 사용
+                # HTML에서 추출한 지정상품 리스트가 있으면 사용
                 if html_designated_items:
                     designated_items = html_designated_items
                     item["detail_html_text"] = detail.get("html", "")
                     item["detail_sc_codes"] = html_sc_codes
                 elif html_sc_codes:
-                    # SC 코드만 추출된 경우, 指定商品 없이 코드만 존재하는 경우
-                    #dummy designated item으로 코드 정보 유지
-                    if not designated_items:
+                    # SC 코드만 추출되고 지정상품 리스트는 없으면,
+                    # 기존 designated_items의 모든 item에 SC 코드 병합 (중요!)
+                    if designated_items:
+                        for d in designated_items:
+                            existing = set(d.get("prior_similarity_codes", []))
+                            existing.update(html_sc_codes)
+                            d["prior_similarity_codes"] = sorted(list(existing))
+                    else:
+                        # 지정상품 자체가 없으면 dummy item으로 코드 정보만 기록
                         designated_items = [{
                             "prior_item_label": "상표지정상품(상세정보)",
                             "prior_class_no": item.get("classificationCode", ""),
@@ -439,13 +491,21 @@ def enrich_search_results_with_item_details(items: list[dict]) -> list[dict]:
                 all_sc.add(code)
         item["queried_codes"] = sorted(list(all_sc))
         
-        if designated_items:
-            item["prior_designated_items"] = designated_items
-            enriched.append(item)
-        else:
-            enriched.append(item)
-    
-    return enriched
+        # 4. prior_designated_items은 항상 설정 (SC 코드가 없어도 빈 리스트로)
+        item["prior_designated_items"] = designated_items
+        has_item_level_sc = any(d.get("prior_similarity_codes") for d in designated_items)
+        if has_item_level_sc:
+            detail_parse_count += 1
+        elif ann:
+            detail_parse_error_count += 1
+            item["detail_parse_error"] = True
+        enriched.append(item)
+
+    return {
+        "items": enriched,
+        "detail_parse_count": detail_parse_count,
+        "detail_parse_error_count": detail_parse_error_count,
+    }
 
 
 def build_kipris_search_plan(
@@ -465,13 +525,83 @@ def build_kipris_search_plan(
         classes = [""]
 
     plan: list[dict] = []
-    
-    # Query A: TN broad fallback (TN only) - 최상위 fallback
-    # 가장 먼저 시도하거나, 마지막에 시도할 수 있지만 
-    # 여기서는 검색 실패를 방지하기 위해 상위 레벨부터 구성
+
+    # Query A: TN + class (class 기반 recall)
+    for class_no in classes:
+        plan.append(
+            {
+                "query_mode": "class_only",
+                "search_mode": "class",
+                "class_no": class_no,
+                "codes": [],
+                "label": QUERY_MODE_LABELS["class_only"],
+                "search_formula": f"({trademark_name}) * ({class_no or '-'})",
+                "max_pages": 3,
+            }
+        )
+
+    # Query B: TN + primary SC (same class 밖 후보 회수 핵심)
+    for code in primary_codes:
+        plan.append(
+            {
+                "query_mode": "primary_sc_only",
+                "search_mode": "sc",
+                "class_no": "",
+                "codes": [code],
+                "label": QUERY_MODE_LABELS["primary_sc_only"],
+                "search_formula": f"({trademark_name}) * ({code})",
+                "max_pages": 3,
+            }
+        )
+
+    # Query C: TN + class + primary SC
+    for class_no in classes:
+        for code in primary_codes:
+            plan.append(
+                {
+                    "query_mode": "primary_sc",
+                    "search_mode": "mixed",
+                    "class_no": class_no,
+                    "codes": [code],
+                    "label": QUERY_MODE_LABELS["primary_sc"],
+                    "search_formula": f"({trademark_name}) * ({class_no or '-'}) * ({code})",
+                    "max_pages": 3,
+                }
+            )
+
+    # Query D: TN + related SC
+    for code in related_codes:
+        plan.append(
+            {
+                "query_mode": "related_sc_only",
+                "search_mode": "sc",
+                "class_no": "",
+                "codes": [code],
+                "label": QUERY_MODE_LABELS["related_sc_only"],
+                "search_formula": f"({trademark_name}) * ({code})",
+                "max_pages": 2,
+            }
+        )
+
+    # Query E: TN + retail SC
+    for code in retail_codes:
+        plan.append(
+            {
+                "query_mode": "retail_sc_only",
+                "search_mode": "sc",
+                "class_no": "",
+                "codes": [code],
+                "label": QUERY_MODE_LABELS["retail_sc_only"],
+                "search_formula": f"({trademark_name}) * ({code})",
+                "max_pages": 2,
+            }
+        )
+
+    # Query F: TN only fallback
     plan.append(
         {
             "query_mode": "text_fallback",
+            "search_mode": "mixed",
             "class_no": "",
             "codes": [],
             "label": QUERY_MODE_LABELS["text_fallback"],
@@ -480,60 +610,6 @@ def build_kipris_search_plan(
         }
     )
 
-    for class_no in classes:
-        # Query B: TN + class
-        plan.append(
-            {
-                "query_mode": "class_only",
-                "class_no": class_no,
-                "codes": [],
-                "label": QUERY_MODE_LABELS["class_only"],
-                "search_formula": f"({trademark_name}) * ({class_no or '-'})",
-                "max_pages": 3,
-            }
-        )
-        
-        # Query C: TN + class + primary SC
-        if primary_codes:
-            for code in primary_codes:
-                plan.append(
-                    {
-                        "query_mode": "primary_sc",
-                        "class_no": class_no,
-                        "codes": [code],
-                        "label": QUERY_MODE_LABELS["primary_sc"],
-                        "search_formula": f"({trademark_name}) * ({class_no or '-'}) * ({code})",
-                        "max_pages": 3,
-                    }
-                )
-        
-        # Query D: TN + class + related SC
-        if related_codes:
-            for code in related_codes:
-                plan.append(
-                    {
-                        "query_mode": "related_sc",
-                        "class_no": class_no,
-                        "codes": [code],
-                        "label": QUERY_MODE_LABELS["related_sc"],
-                        "search_formula": f"({trademark_name}) * ({class_no or '-'}) * ({code})",
-                        "max_pages": 2,
-                    }
-                )
-                
-        if retail_codes:
-            for code in retail_codes:
-                plan.append(
-                    {
-                        "query_mode": "retail_sc",
-                        "class_no": class_no,
-                        "codes": [code],
-                        "label": QUERY_MODE_LABELS["retail_sc"],
-                        "search_formula": f"({trademark_name}) * ({class_no or '-'}) * ({code})",
-                        "max_pages": 2,
-                    }
-                )
-                
     return plan
 
 
@@ -601,7 +677,6 @@ def _mock_search(
     page_no: int,
     query_mode: str,
 ) -> dict:
-    del query_mode
     word_upper = word.upper()
     matched = [
         item
@@ -610,6 +685,8 @@ def _mock_search(
         for item in items
     ]
     target_class = _normalize_class_no(class_no) or _class_from_goods_code(similar_goods_code)
+    if query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only"}:
+        target_class = ""
     if target_class:
         matched = [m for m in matched if target_class in m["classificationCode"].split(",")]
     start = (page_no - 1) * num_of_rows
@@ -634,33 +711,72 @@ def _build_search_expression(
     class_no: str | int | None = None,
     query_mode: str = "",
 ) -> str:
-    """KIPRIS 검색 공식 빌더. 
-    기존의 [brackets] 형식이 KIPRIS에서 에러(null)를 유발하는 경우가 있어,
-    보다 안정적인 (word) * (class) 형식을 사용한다.
+    """KIPRIS 검색식 빌더.
+
+    - class 축: TN + class
+    - sc 축: TN + SC
+    - mixed 축: TN + class + SC
     """
     text = str(word or "").strip()
     code = str(similar_goods_code or "").strip().upper()
     class_text = _normalize_class_no(class_no)
-    
+
     if not text:
         return ""
-        
-    # TN= 형식보다는 (word) 형식이 부분일치(highlight) 검색에 더 유리한 경우가 있음
-    # 하지만 명시적으로 TN=을 쓰는 것이 필드 검색의 정석이므로 
-    # TN=word* 형식을 시도하되, brackets은 제거한다.
-    # KIPRIS 공식 가이드: TN=삼성 (정확히 '삼성'), TN=삼성* ('삼성'으로 시작하는 모든 것)
-    # 실제 테스트 결과: (G트리) * (36) 처럼 괄호와 * 연산자를 쓰는 것이 가장 안정적.
-    
+
     parts = [f"({text})"]
-    if class_text:
-        # CL= 또는 CLASS= 보다는 키워드로서의 류 번호가 더 잘 잡히는 경우가 많음
+    if query_mode in {"class_only", "same_class_fallback"} and class_text:
         parts.append(f"({class_text})")
-        
-    if code and query_mode in {"primary_sc", "related_sc", "retail_sc"}:
+    elif query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only"} and code:
         parts.append(f"({code})")
-        
-    # KIPRIS expression에서 *는 AND 연산자임
+    elif query_mode == "primary_sc":
+        if class_text:
+            parts.append(f"({class_text})")
+        if code:
+            parts.append(f"({code})")
+    else:
+        # fallback: 기존 동작 유지
+        if class_text:
+            parts.append(f"({class_text})")
+        if code:
+            parts.append(f"({code})")
+
     return " * ".join(parts)
+
+
+def _build_request_payload(
+    word: str,
+    expression: str,
+    page_no: int,
+    num_of_rows: int,
+    query_mode: str,
+    class_no: str,
+    code: str,
+) -> dict:
+    payload = {
+        "next": "trademarkList",
+        "FROM": "SEARCH",
+        "searchInTransKorToEng": "N",
+        "searchInTransEngToKor": "N",
+        "row": str(num_of_rows),
+        "queryText": word,
+        "expression": expression or word,
+        "page": str(page_no),
+    }
+    # KIPRIS 상세검색 분류정보->유사군(SC) 경로를 최대한 재현하기 위한 필드 힌트
+    if query_mode in {"primary_sc_only", "primary_sc", "related_sc_only", "retail_sc_only"} and code:
+        payload.update(
+            {
+                "searchType": "detail",
+                "classificationSearchType": "SC",
+                "searchField": "SC",
+                "similarGroupCode": code,
+                "scQuery": code,
+            }
+        )
+    if class_no:
+        payload["classNo"] = class_no
+    return payload
 
 
 def _parse_classes(prc_html: str) -> list[str]:
@@ -713,11 +829,22 @@ def search_trademark(
     target_class = _normalize_class_no(class_no) or (
         _class_from_goods_code(similar_goods_code) if similar_goods_code else ""
     )
+    if query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only"}:
+        target_class = ""
     expression = _build_search_expression(
         word,
         similar_goods_code,
         class_no=target_class,
         query_mode=query_mode,
+    )
+    payload = _build_request_payload(
+        word=word,
+        expression=expression,
+        page_no=page_no,
+        num_of_rows=num_of_rows,
+        query_mode=query_mode,
+        class_no=target_class,
+        code=str(similar_goods_code or "").strip().upper(),
     )
 
     sess = _get_session()
@@ -725,16 +852,7 @@ def search_trademark(
     try:
         resp = sess.post(
             BASE_URL,
-            data={
-                "next": "trademarkList",
-                "FROM": "SEARCH",
-                "searchInTransKorToEng": "N",
-                "searchInTransEngToKor": "N",
-                "row": str(num_of_rows),
-                "queryText": word,
-                "expression": expression or word,
-                "page": str(page_no),
-            },
+            data=payload,
             timeout=20,
         )
         resp_text = resp.text.strip()
@@ -785,10 +903,19 @@ def search_trademark(
         "items": items,
         "mock": False,
         "query_mode": query_mode,
+        "search_mode": _search_mode_for_query_mode(query_mode),
         "query_class_no": target_class,
         "query_codes": [similar_goods_code] if similar_goods_code else [],
         "search_expression": expression or word,
-        "response_text_preview": resp_text[:500]
+        "request_payload_summary": {
+            "next": payload.get("next"),
+            "query_mode": query_mode,
+            "search_mode": _search_mode_for_query_mode(query_mode),
+            "classNo": payload.get("classNo", ""),
+            "similarGroupCode": payload.get("similarGroupCode", ""),
+            "expression": payload.get("expression", ""),
+        },
+        "response_text_preview": resp_text[:500],
     }
 
 
@@ -805,6 +932,8 @@ def search_all_pages(
     target_class = _normalize_class_no(class_no) or (
         _class_from_goods_code(similar_goods_code) if similar_goods_code else ""
     )
+    if query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only"}:
+        target_class = ""
     search_expression = _build_search_expression(
         word,
         similar_goods_code,
@@ -850,12 +979,19 @@ def search_all_pages(
             break
         time.sleep(0.5)
 
-    enriched_items = enrich_search_results_with_item_details(all_items)
+    enrich_payload = enrich_search_results_with_item_details(all_items)
+    merged_candidates = len(enrich_payload.get("items", []))
+    enriched_items = dedupe_search_candidates(enrich_payload.get("items", []))
+    deduped_candidates = len(enriched_items)
+    detail_parse_count = int(enrich_payload.get("detail_parse_count", 0))
+    detail_parse_error_count = int(enrich_payload.get("detail_parse_error_count", 0))
     
     # search_all_pages에서도 최종 상태를 집계하여 반환
     final_status = STATUS_SUCCESS_HITS if enriched_items else STATUS_SUCCESS_ZERO
     if last_result and not last_result["success"]:
         final_status = last_result["search_status"]
+    elif enriched_items and detail_parse_count == 0:
+        final_status = STATUS_DETAIL_PARSE_ERROR
 
     return {
         "success": True,
@@ -867,9 +1003,16 @@ def search_all_pages(
         "items": enriched_items,
         "mock": last_result.get("mock", False) if last_result else False,
         "query_mode": query_mode,
+        "search_mode": _search_mode_for_query_mode(query_mode),
         "query_class_no": target_class,
         "query_codes": [similar_goods_code] if similar_goods_code else [],
         "search_expression": search_expression or word,
+        "request_payload_summary": last_result.get("request_payload_summary", {}) if last_result else {},
+        "extracted_total_count": total_count,
+        "merged_candidates": merged_candidates,
+        "deduped_candidates": deduped_candidates,
+        "detail_parse_count": detail_parse_count,
+        "detail_parse_error_count": detail_parse_error_count,
         "response_text_preview": last_result.get("response_text_preview", "") if last_result else "",
     }
 

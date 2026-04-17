@@ -155,6 +155,8 @@ def _render_search_debug_section(pdf: KoreanPDF, width: float, payload: dict) ->
         f"selected_primary_codes: {pcodes}",
         f"selected_related_codes: {rcodes}",
         f"selected_retail_codes: {etcodes}",
+        f"merged_candidates: {payload.get('merged_candidates', 0)}",
+        f"deduped_candidates: {payload.get('deduped_candidates', 0)}",
     ])
 
     executed_queries = payload.get("executed_queries", [])
@@ -165,9 +167,13 @@ def _render_search_debug_section(pdf: KoreanPDF, width: float, payload: dict) ->
             status = eq.get("search_status", "unknown")
             mark = "[HIT]" if status == "success_with_hits" else "[   ]"
             _write_lines(pdf, width, [
-                f"  {mark} [{eq.get('query_mode', '-')}] {status.upper()} | "
-                f"class={eq.get('class_no', '-')} code={eq.get('code', '') or '(없음)'} -> {hits}건 | {eq.get('search_formula', '')}"
+                f"  {mark} [{eq.get('query_mode', '-')}] [{eq.get('search_mode', 'mixed')}] {status.upper()} | "
+                f"class={eq.get('class_no', '-')} code={eq.get('code', '') or '(없음)'} -> {hits}건 "
+                f"(extracted={eq.get('extracted_total_count', 0)}, detail_parse={eq.get('detail_parse_count', 0)}) | "
+                f"{eq.get('search_formula', '')}"
             ])
+            if eq.get("request_payload_summary"):
+                _write_lines(pdf, width, [f"    payload: {eq.get('request_payload_summary')}"])
     else:
         _write_lines(pdf, width, ["search_queries_attempted: (정보 없음)"])
 

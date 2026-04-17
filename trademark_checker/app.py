@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from improvement import get_improvements
-from kipris_api import build_kipris_search_plan, search_all_pages
+from kipris_api import build_kipris_search_plan, dedupe_search_candidates, search_all_pages
 from nice_catalog import (
     build_selection_summary,
     build_scope_session_state,
@@ -1392,22 +1392,13 @@ if st.session_state.step == 1:
     st.markdown("## 안녕하세요!")
     st.markdown("### 등록하고 싶은 상표명을 알려주세요")
 
-    st.markdown(
-        """
-    <div class="tip-box">
-    <b>상표란?</b> 내 브랜드·회사명·제품명을 법적으로 보호하는 권리예요.<br>
-    상표를 등록하면 다른 사람이 같은 이름을 쓰지 못하게 막을 수 있어요!
-    </div>
-    """,
-        unsafe_allow_html=True,
-    )
-
     col1, col2 = st.columns([2, 1])
     with col1:
-        name = st.text_input(
+        name = st.text_area(
             "상표명 입력",
             placeholder="예) POOKIE, 사랑해, BRAND ONE, 달빛커피...",
             value=st.session_state.trademark_name,
+            height=90,
             label_visibility="collapsed",
         )
 
@@ -1425,28 +1416,10 @@ if st.session_state.step == 1:
 
     st.markdown(f"선택됨: **{st.session_state.trademark_type}**")
 
-    st.markdown("#### 새로 만든 단어인가요?")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("✅ 네, 새로 만든 단어예요\n(조어상표 - 등록에 유리!)", use_container_width=True):
-            st.session_state.is_coined = True
-    with col2:
-        if st.button("아니요, 기존 단어예요\n(일반단어)", use_container_width=True):
-            st.session_state.is_coined = False
-
-    st.markdown(
-        """
-    <div class="tip-box">
-    <b>조어상표란?</b> 기존에 없던 새로운 단어로 만든 상표예요.<br>
-    예) KAKAO, NAVER, COUPANG → 등록 가능성이 높아져요!
-    </div>
-    """,
-        unsafe_allow_html=True,
-    )
-
     if st.button("다음 단계로 → 상품 선택", use_container_width=True, type="primary"):
         if name.strip():
             st.session_state.trademark_name = name.strip()
+            st.session_state.is_coined = False
             st.session_state.step = 2
             st.rerun()
         st.error("상표명을 입력해주세요!")
@@ -2146,26 +2119,40 @@ elif st.session_state.step == 4:
                     search_status = result.get("search_status", "unknown")
                     is_success = result.get("success", False)
                     
-                    if not is_success or search_status in ["transport_error", "parse_error", "blocked_or_unexpected_page"]:
+                    if not is_success or search_status in [
+                        "transport_error",
+                        "parse_error",
+                        "detail_parse_error",
+                        "blocked_or_unexpected_page",
+                    ]:
                         any_search_failed = True
                         last_error_msg = result.get("result_msg", "Unknown error")
 
                     executed_queries.append(
                         {
                             "query_mode": step.get("query_mode", ""),
+                            "search_mode": step.get("search_mode", result.get("search_mode", "mixed")),
                             "class_no": step.get("class_no", ""),
                             "code": code,
                             "search_formula": step.get("search_formula", ""),
                             "result_count": len(result.get("items", [])) if result else 0,
                             "search_status": search_status,
+                            "request_payload_summary": result.get("request_payload_summary", {}),
+                            "extracted_total_count": result.get("extracted_total_count", 0),
+                            "detail_parse_count": result.get("detail_parse_count", 0),
                             "http_status": result.get("http_status", 200),
-                            "response_preview": result.get("response_text_preview", "")[:200]
+                            "response_preview": result.get("response_text_preview", "")[:200],
                         }
                     )
                     if result and result.get("items"):
                         all_results.extend(result["items"])
                     if result and result.get("success") and not result.get("mock", False):
                         used_real_search = True
+
+            # class search + SC search 결과를 union / dedup
+            merged_count = len(all_results)
+            all_results = dedupe_search_candidates(all_results)
+            deduped_count = len(all_results)
 
             field_analysis = evaluate_registration(
                 trademark_name=st.session_state.trademark_name,
@@ -2207,6 +2194,8 @@ elif st.session_state.step == 4:
                     "search_terms_for_prior_marks": field_scope.get("search_terms_for_prior_marks", []),
                     "search_plan": search_plan,
                     "executed_queries": executed_queries,
+                    "merged_candidates": merged_count,
+                    "deduped_candidates": deduped_count,
                     "search_source": "실제 KIPRIS 데이터" if used_real_search else "Mock 데이터 또는 제한 조회",
                     "search_failed": any_search_failed,
                     "search_error_msg": last_error_msg,
@@ -2311,6 +2300,10 @@ elif st.session_state.step == 4:
                 f"**selected_related_codes**: `{', '.join(_rcodes) or '-'}` | "
                 f"**selected_retail_codes**: `{', '.join(_etcodes) or '-'}`"
             )
+            st.markdown(
+                f"**merged_candidates**: `{report.get('merged_candidates', 0)}` | "
+                f"**deduped_candidates**: `{report.get('deduped_candidates', 0)}`"
+            )
             executed_queries = report.get("executed_queries", [])
             if executed_queries:
                 st.markdown("**search_queries_attempted** / **search_hits_per_query**:")
@@ -2330,6 +2323,9 @@ elif st.session_state.step == 4:
                     elif status == "parse_error":
                         icon = "⚠️"
                         status_label = "PARSE ERROR"
+                    elif status == "detail_parse_error":
+                        icon = "🧩"
+                        status_label = "DETAIL PARSE ERROR"
                     elif status == "blocked_or_unexpected_page":
                         icon = "⛔"
                         status_label = "BLOCKED/HTML"
@@ -2339,11 +2335,15 @@ elif st.session_state.step == 4:
 
                     st.markdown(
                         f"- {icon} `[{eq.get('query_mode','-')}]` "
+                        f"`[{eq.get('search_mode','mixed')}]` "
                         f"**{status_label}** | "
                         f"class={eq.get('class_no','-')} "
                         f"code={eq.get('code','-') or '(없음)'} | "
+                        f"hits={hits} extracted={eq.get('extracted_total_count',0)} detail_parse={eq.get('detail_parse_count',0)} | "
                         f"`{eq.get('search_formula','')}`"
                     )
+                    if eq.get("request_payload_summary"):
+                        st.caption(f"payload: {eq.get('request_payload_summary')}")
                     if eq.get("response_preview"):
                         with st.expander(f"Response Preview for {eq.get('query_mode')}", expanded=False):
                             st.code(eq.get("response_preview"))

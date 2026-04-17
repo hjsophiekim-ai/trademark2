@@ -86,9 +86,9 @@ FAMOUS_MARKS = {
 }
 NON_DISTINCTIVE_WORDS = {
     "love", "good", "best", "smile", "happy", "great", "cool", "hot", "top",
-    "pro", "plus", "ultra", "super", "smart", "fresh", "clean", "fast",
+    "pro", "plus", "ultra", "super", "smart", "fresh", "clean", "fast", "pretty",
     "big", "small", "new", "old", "red", "blue", "green", "black", "white",
-    "사랑", "행복", "최고", "좋은", "미소", "감사", "전문",
+    "사랑", "행복", "최고", "좋은", "미소", "감사", "전문", "예쁜",
     "고양이", "강아지", "사과", "포도", "바나나", "나무", "꽃", "하늘",
     "바다", "산", "물", "불",
     "신선", "달콤", "깔끔", "빠른", "느린", "큰", "작은", "예쁜",
@@ -103,11 +103,13 @@ DESCRIPTIVE_PATTERNS = {
     "fresh": {29, 30, 31, 32, 43}, # 신선한
     "clean": {3, 37}, # 세정, 청소
     "fast": {39, 43}, # 배달, 음식
+    "pretty": {3},   # 화장품, 향수 등에서 '예쁜'
     "시원": {3, 5, 32},
     "달콤": {30, 32},
     "신선": {29, 30, 31, 32, 43},
     "깔끔": {3, 37},
     "빠른": {39, 43},
+    "예쁜": {3},
 }
 COMMON_SURNAMES = {
     "kim",
@@ -684,18 +686,39 @@ def evaluate_absolute_refusal(
                             "reason": f"'{trademark_name}'는 일반적인 사물/성질 명칭으로 보여지며, 조어 상표가 아니므로 식별력이 부족할 가능성이 있습니다.",
                         }
                     )
-    for pattern, classes in DESCRIPTIVE_PATTERNS.items():
-        if not is_coined and pattern in compact_mark:
-            if any(cls in classes for cls in selected_classes):
-                findings.append(
-                    {
-                        "basis": "제33-1-3",
-                        "level": "fatal",
-                        "cap": 8,
-                        "reason": f"'{trademark_name}'는 지정상품의 품질, 원재료, 효능 또는 성질을 직접적으로 나타내는 기술적 표장(성질표시)에 해당합니다. 상표법 제33조 제1항 제3호에 의해 등록이 거절될 가능성이 매우 높습니다.",
-                    }
-                )
-                break
+    # 2. 기술적 표장 (제33조 제1항 제3호 - 성질표시 표장)
+    # "pretty skin"에서 "pretty"를 감지하려면 공백 제거 후 combined_mark에서 체크하는 기존 방식과
+    #并存하여, 각 어절 단위(공백-split)에서도 패턴 체크
+    if not is_coined:
+        for pattern, classes in DESCRIPTIVE_PATTERNS.items():
+            if pattern in compact_mark:
+                if any(cls in classes for cls in selected_classes):
+                    findings.append(
+                        {
+                            "basis": "제33-1-3",
+                            "level": "fatal",
+                            "cap": 8,
+                            "reason": f"'{trademark_name}'는 지정상품의 품질, 원재료, 효능 또는 성질을 직접적으로 나타내는 기술적 표장(성질표시)에 해당합니다. 상표법 제33조 제1항 제3호에 의해 등록이 거절될 가능성이 매우 높습니다.",
+                        }
+                    )
+                    break
+            # combined mark에서 안 잡히면 어절 단위로도 체크 (예: "pretty skin"에서 "pretty")
+            # NOTE: 어절 단위에서는 has_alphanum exemption을 적용하지 않음
+            # 왜냐하면 "pretty" 단독으로는 이미 NON_DISTINCTIVE_WORDS에 걸러지기 때문
+            parts = _iter_text_parts(trademark_name)
+            for part in parts:
+                part_compact = _compact(part)
+                if pattern in part_compact:
+                    if any(cls in classes for cls in selected_classes):
+                        findings.append(
+                            {
+                                "basis": "제33-1-3",
+                                "level": "fatal",
+                                "cap": 8,
+                                "reason": f"'{trademark_name}'의 구성 요소 '{part}'는 지정상품의 품질, 원재료, 효능 또는 성질을 직접적으로 나타내는 기술적 표장(성질표시)에 해당합니다.",
+                            }
+                        )
+                        break
 
     if any(term in compact_mark for term in IMPROPER_TERMS):
         findings.append(

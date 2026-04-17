@@ -926,6 +926,29 @@ def _calibrate_score(
     confusion_score = int(strongest.get("confusion_score", 0)) if strongest else 0
     primary_match_count = int(strongest.get("primary_code_overlap_count", 0)) if strongest else 0
 
+    if strongest and strongest.get("mark_identity") == "exact" and confusion_score >= 80:
+        upper = 18
+        lower = 5
+        calibrated = min(max(calibrated, lower), upper)
+        cap_info = {
+            "cap_reason": f"exact mark live blocker (confusion={confusion_score}%)",
+            "stage2_cap_upper": upper,
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append(
+            "완전 동일한 표장이 실질 장애물로 존재해 상대적 거절사유 관점에서 등록 가능성을 5~18 구간으로 강하게 제한했습니다."
+        )
+        explanations.append(
+            f"상품 유사성 필터 통과 후보 {len(included)}건 중 최종 점수에 직접 반영한 실질 장애물은 {len(live_blockers)}건입니다."
+        )
+        if historical_references:
+            explanations.append(_build_reference_summary(historical_references))
+        if actual_risk_count:
+            explanations.append(f"실질 장애물 {len(live_blockers)}건 중 실제 충돌 위험 후보는 {actual_risk_count}건입니다.")
+        else:
+            explanations.append("실질 장애물 후보는 있으나 실제 충돌 위험도는 제한적으로 평가했습니다.")
+        return calibrated, explanations, cap_info
+
     if strongest_type == "exact_primary_overlap":
         cap = 40
         if mark_similarity >= 90:

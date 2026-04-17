@@ -1,0 +1,12 @@
+안드로이드용 설치파일 만들기
+
+mkdir C:\dev -Force
+robocopy "G:\내 드라이브\김현주\Stock quant trading" "C:\dev\stock-quant-trading" /E /XD node_modules .git dist .expo .next build release
+
+복사끝난후
+cd "C:\dev\stock-quant-trading\apps\mobile"
+npm install
+npm i -g eas-cli
+npx eas-cli login
+npx eas-cli build:configure
+npx eas-cli build --platform android --profile preview-apk

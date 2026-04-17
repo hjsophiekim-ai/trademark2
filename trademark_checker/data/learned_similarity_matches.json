@@ -1,0 +1,58 @@
+{
+  "version": "1.0",
+  "description": "운영 중 축적되는 지정상품명 -> 유사군코드 학습 매핑. exact/alias 매칭 실패 시 참조.",
+  "matches": [
+    {
+      "raw_label": "법무서비스업",
+      "mapped_codes": ["S120402"],
+      "reviewer_confirmed": true,
+      "source": "manual_correction",
+      "class_no": 45,
+      "note": "45류 기타(S174599) fallback 오류 수정"
+    },
+    {
+      "raw_label": "법률서비스업",
+      "mapped_codes": ["S120402"],
+      "reviewer_confirmed": true,
+      "source": "manual_correction",
+      "class_no": 45
+    },
+    {
+      "raw_label": "법률상담서비스업",
+      "mapped_codes": ["S120402"],
+      "reviewer_confirmed": true,
+      "source": "manual_correction",
+      "class_no": 45
+    },
+    {
+      "raw_label": "금융 또는 재무에 관한 정보제공업",
+      "mapped_codes": ["S0201", "S120401"],
+      "reviewer_confirmed": true,
+      "source": "manual_correction",
+      "class_no": 36,
+      "note": "금융+재무 복합 라벨 -> multi-code"
+    },
+    {
+      "raw_label": "금융 또는 재무에 관한 상담업",
+      "mapped_codes": ["S0201", "S120401"],
+      "reviewer_confirmed": true,
+      "source": "manual_correction",
+      "class_no": 36,
+      "note": "금융+재무 복합 라벨 -> multi-code"
+    },
+    {
+      "raw_label": "금융정보제공업",
+      "mapped_codes": ["S0201", "S120401"],
+      "reviewer_confirmed": true,
+      "source": "manual_correction",
+      "class_no": 36
+    },
+    {
+      "raw_label": "재무에 관한 정보제공업",
+      "mapped_codes": ["S120401"],
+      "reviewer_confirmed": true,
+      "source": "manual_correction",
+      "class_no": 36
+    }
+  ]
+}

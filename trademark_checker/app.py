@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from improvement import get_improvements
-from kipris_api import search_all_pages
+from kipris_api import build_kipris_search_plan, search_all_pages
 from nice_catalog import (
     build_selection_summary,
     build_scope_session_state,
@@ -22,6 +22,7 @@ from nice_catalog import (
     subgroup_to_field,
     validate_catalog_coverage,
 )
+from goods_scope import normalize_selected_input
 from report_generator import generate_report_pdf
 from scoring import evaluate_registration, similarity_percent, strip_html
 from search_mapper import get_category_suggestions
@@ -173,59 +174,7 @@ def all_fields_ready() -> bool:
     return bool(selected_fields) and all(field_ready(field) for field in selected_fields)
 
 
-def build_report_payload() -> dict:
-    analysis = st.session_state.get("analysis") or {}
-    field_reports = []
-    for report in analysis.get("field_reports", []):
-        field = report.get("field", {})
-        field_reports.append(
-            {
-                "field_label": field_label(field),
-                "specific_product": report.get("specific_product", ""),
-                "selected_classes": [field_label(field)],
-                "selected_codes": report.get("selected_codes", []),
-                "score": report.get("score", 0),
-                "score_label": report.get("band", {}).get("label", "-"),
-                "distinctiveness": report.get("distinctiveness", "-"),
-                "prior_count": report.get("prior_count", 0),
-                "total_prior_count": report.get("total_prior_count", 0),
-                "top_prior": report.get("top_prior", []),
-                "distinctiveness_analysis": report.get("distinctiveness_analysis", {}),
-                "product_similarity_analysis": report.get("product_similarity_analysis", {}),
-                "mark_similarity_analysis": report.get("mark_similarity_analysis", {}),
-                "confusion_analysis": report.get("confusion_analysis", {}),
-                "score_explanation": report.get("score_explanation", {}),
-                "direct_score_prior_count": report.get("direct_score_prior_count", 0),
-                "historical_reference_count": report.get("historical_reference_count", 0),
-                "reference_summary": report.get("reference_summary", ""),
-                "name_options": [
-                    {"name": item["name"], "expected_score": item["score"]}
-                    for item in report.get("improvements", {}).get("name_suggestions", [])
-                ],
-                "scope_options": [
-                    {
-                        "title": item["description"],
-                        "description": item["reason"],
-                        "expected_score": item["expected_score"],
-                    }
-                    for item in report.get("improvements", {}).get("code_suggestions", [])
-                ],
-                "class_options": [
-                    {
-                        "title": item["description"],
-                        "description": item["reason"],
-                        "expected_score": item["expected_score"],
-                    }
-                    for item in report.get("improvements", {}).get("class_suggestions", [])
-                ],
-            }
-        )
-    return {
-        "trademark_name": st.session_state.get("trademark_name", ""),
-        "trademark_type": st.session_state.get("trademark_type", ""),
-        "selected_classes": [field_label(field) for field in current_selected_fields()],
-        "field_reports": field_reports,
-    }
+# build_report_payload is defined below (single active definition)
 
 
 def field_widget_key(field: dict) -> str:
@@ -403,17 +352,33 @@ def build_report_payload() -> dict:
                 "subgroup_keywords": report.get("selected_keywords", field.get("keywords", [])),
                 "selected_classes": [format_nice_classes(field.get("nice_classes", [])) or field_label(field)],
                 "selected_codes": report.get("selected_codes", []),
+                # ── 핵심 유사군코드 3종 (보고서 디버그용) ──────────────────────────
+                "selected_primary_codes": report.get("selected_primary_codes", []),
+                "selected_related_codes": report.get("selected_related_codes", []),
+                "selected_retail_codes": report.get("selected_retail_codes", []),
+                # ── 검색 파이프라인 디버그 ──────────────────────────────────────
+                "executed_queries": report.get("executed_queries", []),
+                "search_plan": report.get("search_plan", []),
+                "overlap_type_analysis": report.get("overlap_type_analysis", {}),
                 "score": report.get("score", 0),
                 "score_label": report.get("band", {}).get("label", "-"),
                 "distinctiveness": report.get("distinctiveness", "-"),
+                "absolute_risk_level": report.get("absolute_risk_level", "none"),
+                "absolute_refusal_bases": report.get("absolute_refusal_bases", []),
+                "distinctiveness_score": report.get("distinctiveness_score", 0),
+                "absolute_probability_cap": report.get("absolute_probability_cap", 95),
+                "acquired_distinctiveness_needed": report.get("acquired_distinctiveness_needed", False),
                 "prior_count": report.get("prior_count", 0),
                 "total_prior_count": report.get("total_prior_count", 0),
                 "top_prior": report.get("top_prior", []),
                 "distinctiveness_analysis": report.get("distinctiveness_analysis", {}),
+                "absolute_refusal_analysis": report.get("absolute_refusal_analysis", {}),
                 "product_similarity_analysis": report.get("product_similarity_analysis", {}),
                 "mark_similarity_analysis": report.get("mark_similarity_analysis", {}),
                 "confusion_analysis": report.get("confusion_analysis", {}),
                 "score_explanation": report.get("score_explanation", {}),
+                "stage1_absolute_cap": report.get("stage1_absolute_cap", 95),
+                "stage2_relative_cap_adjusted": report.get("stage2_relative_cap_adjusted", report.get("score", 0)),
                 "filtered_prior_count": report.get("filtered_prior_count", 0),
                 "excluded_prior_count": report.get("excluded_prior_count", 0),
                 "actual_risk_prior_count": report.get("actual_risk_prior_count", 0),
@@ -464,6 +429,22 @@ def build_report_payload() -> dict:
         "subgroup_keywords": st.session_state.get("subgroup_keywords", []),
         "search_terms_for_prior_marks": st.session_state.get("search_terms_for_prior_marks", []),
         "selected_classes": [format_nice_classes(st.session_state.get("selected_nice_classes", []))],
+        # 전체 필드 선택 코드 집계 (PDF Basic Info 섹션용)
+        "selected_primary_codes": list({
+            code
+            for r in analysis.get("field_reports", [])
+            for code in r.get("selected_primary_codes", [])
+        }),
+        "selected_related_codes": list({
+            code
+            for r in analysis.get("field_reports", [])
+            for code in r.get("selected_related_codes", [])
+        }),
+        "selected_retail_codes": list({
+            code
+            for r in analysis.get("field_reports", [])
+            for code in r.get("selected_retail_codes", [])
+        }),
         "field_reports": field_reports,
     }
 
@@ -2123,29 +2104,59 @@ elif st.session_state.step == 4:
             config = get_field_input(field)
             field_scope = derive_field_scope(field)
             derived_codes = field_scope.get("derived_similarity_codes", [])
+            derived_classes = field_scope.get("derived_nice_classes", field.get("nice_classes", [field["class_no"]]))
+            overlap_context = normalize_selected_input(
+                selected_kind=field.get("kind", st.session_state.get("selected_kind")),
+                selected_classes=derived_classes,
+                selected_codes=derived_codes,
+                selected_fields=[field],
+                specific_product_text=config.get("specific_product", ""),
+            )
+            primary_codes = overlap_context.get("selected_primary_codes", [])
+            related_codes = overlap_context.get("selected_related_codes", [])
+            retail_codes = overlap_context.get("selected_retail_codes", [])
             status.markdown(f"🔎 {field_label(field)} KIPRIS 선행상표 검색 및 분석 중... ({index}/{total_fields})")
             all_results = []
             used_real_search = False
 
-            for code in derived_codes:
-                result = search_all_pages(st.session_state.trademark_name, similar_goods_code=code, max_pages=3)
-                if result and result.get("items"):
-                    all_results.extend([{**item, "queried_codes": [code]} for item in result["items"]])
-                if result and result.get("success") and not result.get("mock", False):
-                    used_real_search = True
+            search_plan = build_kipris_search_plan(
+                st.session_state.trademark_name,
+                derived_classes,
+                primary_codes,
+                related_codes=related_codes,
+                retail_codes=retail_codes,
+            )
+            executed_queries = []
 
-            if not all_results:
-                fallback = search_all_pages(st.session_state.trademark_name, max_pages=3)
-                if fallback and fallback.get("items"):
-                    all_results.extend([{**item, "queried_codes": []} for item in fallback["items"]])
-                if fallback and fallback.get("success") and not fallback.get("mock", False):
-                    used_real_search = True
+            for step in search_plan:
+                codes = step.get("codes") or [""]
+                for code in codes:
+                    result = search_all_pages(
+                        st.session_state.trademark_name,
+                        similar_goods_code=code,
+                        class_no=step.get("class_no"),
+                        max_pages=step.get("max_pages", 3),
+                        query_mode=step.get("query_mode", ""),
+                    )
+                    executed_queries.append(
+                        {
+                            "query_mode": step.get("query_mode", ""),
+                            "class_no": step.get("class_no", ""),
+                            "code": code,
+                            "search_formula": step.get("search_formula", ""),
+                            "result_count": len(result.get("items", [])) if result else 0,
+                        }
+                    )
+                    if result and result.get("items"):
+                        all_results.extend(result["items"])
+                    if result and result.get("success") and not result.get("mock", False):
+                        used_real_search = True
 
             field_analysis = evaluate_registration(
                 trademark_name=st.session_state.trademark_name,
                 trademark_type=st.session_state.trademark_type,
                 is_coined=st.session_state.is_coined,
-                selected_classes=field_scope.get("derived_nice_classes", field.get("nice_classes", [field["class_no"]])),
+                selected_classes=derived_classes,
                 selected_codes=derived_codes,
                 prior_items=all_results,
                 selected_fields=[field],
@@ -2162,7 +2173,12 @@ elif st.session_state.step == 4:
                     "selected_similarity_codes": list(derived_codes),
                     "selected_nice_classes": field_scope.get("derived_nice_classes", field.get("nice_classes", [])),
                     "selected_keywords": field_scope.get("subgroup_keywords", field.get("keywords", [])),
+                    "selected_primary_codes": list(primary_codes),
+                    "selected_related_codes": list(related_codes),
+                    "selected_retail_codes": list(retail_codes),
                     "search_terms_for_prior_marks": field_scope.get("search_terms_for_prior_marks", []),
+                    "search_plan": search_plan,
+                    "executed_queries": executed_queries,
                     "search_source": "실제 KIPRIS 데이터" if used_real_search else "Mock 데이터 또는 제한 조회",
                     "improvements": get_improvements(
                         st.session_state.trademark_name,
@@ -2251,6 +2267,38 @@ elif st.session_state.step == 4:
         with sub5:
             st.metric("제외된 후보 건수", f"{report.get('excluded_prior_count', len(excluded_results))}건")
 
+        # ── 검색 파이프라인 디버그 섹션 ──────────────────────────────────────
+        with st.expander("🔍 검색 파이프라인 디버그", expanded=False):
+            _pcodes = report.get("selected_primary_codes", [])
+            _rcodes = report.get("selected_related_codes", [])
+            _etcodes = report.get("selected_retail_codes", [])
+            st.markdown(
+                f"**selected_primary_codes**: `{', '.join(_pcodes) or '-'}` | "
+                f"**selected_related_codes**: `{', '.join(_rcodes) or '-'}` | "
+                f"**selected_retail_codes**: `{', '.join(_etcodes) or '-'}`"
+            )
+            executed_queries = report.get("executed_queries", [])
+            if executed_queries:
+                st.markdown("**search_queries_attempted** / **search_hits_per_query**:")
+                for eq in executed_queries:
+                    hits = eq.get("result_count", 0)
+                    icon = "✅" if hits > 0 else "⬜"
+                    st.markdown(
+                        f"- {icon} `[{eq.get('query_mode','-')}]` "
+                        f"class={eq.get('class_no','-')} "
+                        f"code={eq.get('code','-') or '(없음)'} → "
+                        f"**{hits}건** | `{eq.get('search_formula','')}`"
+                    )
+            else:
+                st.caption("executed_queries 정보 없음 (이전 버전 분석 결과)")
+            ota = report.get("overlap_type_analysis", {})
+            if ota:
+                st.markdown(
+                    f"**strongest overlap_type**: `{ota.get('strongest_overlap_type','-')}` | "
+                    f"**strongest prior item**: {ota.get('strongest_matching_prior_item','없음') or '없음'} | "
+                    f"**strongest prior codes**: `{', '.join(ota.get('strongest_matching_prior_codes',[]))  or '-'}`"
+                )
+
         st.markdown("### 점수 산정 해설")
         score_explanation = report.get("score_explanation", {})
         st.markdown(
@@ -2266,8 +2314,11 @@ elif st.session_state.step == 4:
             st.markdown(f"- {note}")
         if report.get("direct_score_prior_count", 0) == 0:
             st.markdown("- 상품 유사성 필터 통과 후보가 있어도 현재 살아있는 장애물이 없으면 최종 점수는 직접 감점하지 않습니다.")
-        if report.get("distinctiveness") in {"식별력 약함", "거절 가능성 큼"} and report.get("direct_score_prior_count", 0) == 0:
-            st.markdown("- 식별력 약함은 별도 축으로 반영되며, 충돌 후보가 없으면 등록 가능성이 여전히 높게 나올 수 있습니다.")
+        if report.get("absolute_risk_level") in {"high", "fatal"}:
+            st.markdown(
+                f"- Stage 1 절대적 거절사유 상한 {report.get('absolute_probability_cap', 95)}%가 먼저 적용되어 "
+                "Stage 2 점수가 더 높아도 최종 점수는 다시 올라가지 않습니다."
+            )
         st.markdown(
             """
             <div class="tip-box">
@@ -2279,21 +2330,26 @@ elif st.session_state.step == 4:
             unsafe_allow_html=True,
         )
 
-        st.markdown("### 식별력 판단")
-        distinctiveness = report.get("distinctiveness_analysis", {})
+        st.markdown("### Stage 1 절대적 거절사유 / 식별력")
+        distinctiveness = report.get("absolute_refusal_analysis", report.get("distinctiveness_analysis", {}))
         st.markdown(
             f"""
             <div class="card">
                 <b>{report.get('distinctiveness', '-')}</b><br>
-                <small style="color:#546E7A;">{distinctiveness.get('summary', '-')}</small>
+                <small style="color:#546E7A;">{distinctiveness.get('summary', '-')}</small><br>
+                <small style="color:#546E7A;">risk {report.get('absolute_risk_level', 'none')} / cap {report.get('absolute_probability_cap', 95)}% / 식별력 점수 {report.get('distinctiveness_score', 0)}</small>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        if report.get("absolute_refusal_bases"):
+            st.markdown(f"- 절대적 거절사유 근거: {', '.join(report.get('absolute_refusal_bases', []))}")
+        if report.get("acquired_distinctiveness_needed"):
+            st.markdown("- 사용에 의한 식별력 취득 보완 검토가 필요한 유형으로 분류했습니다.")
         for reason in distinctiveness.get("reasons", []):
             st.markdown(f"- {reason}")
 
-        st.markdown("### 상품 유사성 검토 결과")
+        st.markdown("### Stage 2 상대적 거절사유 / 상품 유사성")
         product_analysis = report.get("product_similarity_analysis", {})
         bucket_counts = product_analysis.get("bucket_counts", {})
         st.markdown(

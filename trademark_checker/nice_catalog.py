@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Callable, Iterable
 from xml.etree import ElementTree as ET
 
-from similarity_code_db import SIMILARITY_CODE_SOURCE_PATH, derive_similarity_mapping
+from similarity_code_db import (
+    ALIAS_TABLE_PATH,
+    LEARNED_MATCHES_PATH,
+    SIMILARITY_CODE_SOURCE_PATH,
+    derive_similarity_mapping,
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -371,7 +376,11 @@ def _build_group_catalog(rows: list[dict[str, str]]) -> dict[str, list[dict]]:
                     "subgroup_id": f"{group_id}_{class_no:02d}_{index:02d}",
                     "subgroup_label": subgroup_label,
                     "keywords": keywords,
-                    "similarity_codes": similarity_mapping["chosen_codes"],
+                    "similarity_codes": (
+                        similarity_mapping["chosen_codes"][:1]
+                        if similarity_mapping["chosen_codes"]
+                        else similarity_mapping["candidate_codes"][:1]
+                    ),
                     "candidate_similarity_codes": similarity_mapping["candidate_codes"],
                     "similarity_match_reason": similarity_mapping["match_reason"],
                     "similarity_match_confidence": similarity_mapping["match_confidence"],
@@ -411,12 +420,19 @@ def export_catalog_cache() -> tuple[list[dict], dict[str, list[dict]]]:
 def _cache_is_stale() -> bool:
     if not CLASS_CATALOG_PATH.exists() or not GROUP_CATALOG_PATH.exists():
         return True
-    excel_mtime = EXCEL_SOURCE_PATH.stat().st_mtime
-    similarity_mtime = SIMILARITY_CODE_SOURCE_PATH.stat().st_mtime if SIMILARITY_CODE_SOURCE_PATH.exists() else 0
+    dependency_paths = [
+        EXCEL_SOURCE_PATH,
+        SIMILARITY_CODE_SOURCE_PATH,
+        ALIAS_TABLE_PATH,
+        LEARNED_MATCHES_PATH,
+        Path(__file__),
+    ]
+    dependency_mtime = max(
+        path.stat().st_mtime for path in dependency_paths if path.exists()
+    )
     return (
-        CLASS_CATALOG_PATH.stat().st_mtime < excel_mtime
-        or GROUP_CATALOG_PATH.stat().st_mtime < excel_mtime
-        or GROUP_CATALOG_PATH.stat().st_mtime < similarity_mtime
+        CLASS_CATALOG_PATH.stat().st_mtime < dependency_mtime
+        or GROUP_CATALOG_PATH.stat().st_mtime < dependency_mtime
     )
 
 

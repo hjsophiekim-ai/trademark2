@@ -1,0 +1,208 @@
+{
+  "version": "1.1",
+  "description": "유사군코드 별칭 사전. source of truth: 상품유사군코드.xlsx + 특허청 예규 제95호",
+  "aliases": [
+    {
+      "alias": "법률",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high",
+      "note": "법률서비스, 법무서비스 등 포함"
+    },
+    {
+      "alias": "법무",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high",
+      "note": "법무서비스업, 법무대리업 등 포함"
+    },
+    {
+      "alias": "법률상담",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "법무상담",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "법률자문",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "법무자문",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "변호사",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "법무대리",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "법률대리",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "노무",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "medium",
+      "note": "공인노무사 관련 서비스"
+    },
+    {
+      "alias": "노무상담",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "변리사",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "특허출원",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "상표출원",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "지식재산",
+      "mapped_codes": ["S120402"],
+      "class_hint": 45,
+      "confidence": "high"
+    },
+    {
+      "alias": "금융",
+      "mapped_codes": ["S0201"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "은행",
+      "mapped_codes": ["S0201"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "통화",
+      "mapped_codes": ["S0201"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "환전",
+      "mapped_codes": ["S0201"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "보험",
+      "mapped_codes": ["S0301"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "재무평가",
+      "mapped_codes": ["S120401"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "재무관리",
+      "mapped_codes": ["S120401"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "재무상담",
+      "mapped_codes": ["S120401"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "재무자문",
+      "mapped_codes": ["S120401"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "재무설계",
+      "mapped_codes": ["S120401"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "재무정보",
+      "mapped_codes": ["S120401"],
+      "class_hint": 36,
+      "confidence": "medium"
+    },
+    {
+      "alias": "재무",
+      "mapped_codes": ["S120401"],
+      "class_hint": 36,
+      "confidence": "medium",
+      "note": "단독 재무 키워드는 medium confidence. 금융과 결합되면 multi-code"
+    },
+    {
+      "alias": "부동산",
+      "mapped_codes": ["S1212"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "부동산중개",
+      "mapped_codes": ["S1212", "S121201"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "부동산임대",
+      "mapped_codes": ["S1212", "S121203"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "부동산감정",
+      "mapped_codes": ["S1212", "S121202"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "부동산관리",
+      "mapped_codes": ["S1212", "S121201"],
+      "class_hint": 36,
+      "confidence": "high"
+    },
+    {
+      "alias": "부동산평가",
+      "mapped_codes": ["S1212", "S121202"],
+      "class_hint": 36,
+      "confidence": "high"
+    }
+  ]
+}

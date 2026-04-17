@@ -1,124 +1,131 @@
 # 니스분류 기반 상품류/상품군 UI 설계
 
-## 1. 목적
-Step 2 상품범위 선택 화면은 아래 사용자 흐름만 제공한다.
+## 1. 사용자 입력 원칙
+- 사용자는 상품군만 선택한다.
+- 유사군코드 직접 선택 UI는 노출하지 않는다.
+- 입력 단계는 아래만 유지한다.
+  - 분류 1: goods / services
+  - 분류 2: 그룹
+  - 상품군 또는 서비스군
+  - 필요 시 구체 상품명
 
-1. 분류 1 선택
-2. 분류 2 선택
-3. 구체상품군 선택
-4. 검토 실행
-5. 결과
-6. 개선방안
-
-사용자에게 유사군코드를 다시 고르게 하지 않는다. 유사군코드는 시스템 내부 파생값으로만 사용한다.
-
-데이터 source of truth는 아래로 고정한다.
-
-- 구체상품군/니스류: `docs/지식재산처_상품분류_니스분류.xlsx`
-- 유사군코드: `docs/상품유사군코드.xlsx`
-
-## 2. 상태 머신
-- `step_main = 2`
-- `step_scope_sub = "group" | "subgroup" | "review_ready"`
-
-필수 상태값은 아래와 같다.
-
-- `selected_kind`
-- `selected_group_id`
-- `selected_group_label`
-- `selected_subgroup_ids`
-- `selected_subgroup_labels`
+## 2. 시스템 자동 도출
+상품군 선택 후 시스템이 자동으로 아래를 계산한다.
 - `derived_nice_classes`
-- `derived_similarity_codes`
-- `subgroup_keywords`
-
-레거시 호환용으로 `selected_group`, `selected_groups`, `selected_subgroups`를 유지할 수는 있지만, Step 전환 판단의 기준은 아래 새 상태값이다.
-
-## 3. 분류 2 저장 규칙
-분류 2 카테고리 클릭 시 즉시 아래 값이 `session_state`에 저장되어야 한다.
-
-- `selected_group_id`
-- `selected_group_label`
-- `step_scope_sub = "group"`
-
-중요 규칙:
-
-- 분류 2 선택 직후 rerun 되어도 `selected_group_id`는 지워지면 안 된다.
-- 하위 `selected_subgroup_ids`를 비우더라도 `selected_group_id`는 유지해야 한다.
-- `selected_group` 같은 레거시 키는 필요하면 alias로만 유지한다.
-
-## 4. 버튼 활성화 조건
-`구체상품군 선택 단계로 이동` 버튼 활성화 조건은 아래 두 가지만 본다.
-
-- `selected_kind` 존재
-- `selected_group_id` 존재
-
-아래 값들은 이 버튼 활성화 조건에 사용하지 않는다.
-
-- `selected_codes`
-- `selected_fields`
-- `field_inputs`
-- 기타 레거시 유사군코드 관련 값
-
-## 5. Step 3 렌더링 조건
-Step 3은 별도 화면처럼 보이게 렌더링한다.
-
-- 제목: `3. 구체상품군 선택`
-- 설명: `선택한 카테고리에 해당하는 상품군을 1개 이상 선택하세요`
-
-렌더링 조건:
-
-- `step_scope_sub in {"subgroup", "review_ready"}`
-- `selected_kind` 존재
-- `selected_group_id` 존재
-
-즉, `selected_codes`가 비어 있어도 Step 3 렌더링을 막지 않는다.
-
-## 6. 구체상품군 선택 완료 규칙
-Step 3에서 구체상품군을 1개 이상 선택하면 아래가 계산되어야 한다.
-
-- `selected_subgroup_ids`
-- `selected_subgroup_labels`
-- `derived_nice_classes`
-- `derived_similarity_codes`
-- `subgroup_keywords`
-- `step_scope_sub = "review_ready"`
-
-검토 실행 가능 조건은 `selected_subgroup_ids`가 1개 이상 존재하는지로 판단한다.
-
-## 7. 유사군코드 처리 원칙
-유사군코드는 사용자 입력 단계가 아니다.
-
-- 사용자 선택 기준: `selected_subgroup_ids`
-- 시스템 파생 기준: `derived_similarity_codes`
-- subgroup별 매핑은 `상품유사군코드.xlsx` 기준 실제 예규 코드만 사용한다.
-- 가상코드(`S3601`, `S3602`, `S3603`)와 클래스 번호 문자열 조합식 코드는 금지한다.
-
-자동 매핑 순서는 아래와 같다.
-
-1. `exact_label_match`
-2. `normalized_semantic_match`
-3. `keyword_dictionary_match`
-4. `same_class_fallback`
-
-표시 원칙:
-
-- Step 2/Step 3에서는 필요 시 `내부 도출 유사군코드`로만 참고 표시 가능
-- 사용자-facing 단계명에 `유사군코드 선택`을 넣지 않음
-- Step 3 완료 후에는 별도 코드 선택 화면 없이 바로 `검토 실행`으로 이동한다.
-
-## 8. 디버그 표시
-개발용 디버그 표시는 아래 값을 확인할 수 있어야 한다.
-
-- `selected_kind`
-- `selected_group_id`
-- `step_scope_sub`
-- `len(selected_subgroup_ids)`
-- `selected_subgroups`
+- `selected_primary_codes`
+- `selected_related_codes`
+- `selected_retail_codes`
 - `candidate_similarity_codes`
-- `chosen_similarity_codes`
-- `match_reason`
-- `match_confidence`
-- `fallback_used`
 
-버그 수정 완료 후에도 숨김 expander 형태로 유지 가능하다.
+기본 원칙:
+- UI에는 코드 선택 단계를 만들지 않는다.
+- 내부 엔진만 primary / related / retail code를 자동 도출한다.
+- 상품군 기본 코드는 primary 위주로 유지하고, related / retail은 후보 코드로 분리한다.
+
+## 3. 검색 단계
+검색은 넓게, 평가는 좁게 한다.
+
+### 3.1 KIPRIS recall
+- 1차: `TN + class + primary SC`
+- 2차: `TN + class only`
+- 2차 보조: `TN + related SC`
+- 2차 보조: `TN + retail/service SC`
+- 마지막: `TN` broad fallback
+
+### 3.2 평가 기준
+- 검색 결과를 그대로 direct conflict로 보지 않는다.
+- prior mark 비교는 반드시 prior designated item의 item-level SC 기준으로 한다.
+- 검색식에 사용한 SC는 recall metadata로만 남긴다.
+
+## 4. item-level 비교 엔진
+각 selected subgroup와 prior designated item 쌍마다 아래를 계산한다.
+- `selected_primary_codes`
+- `selected_related_codes`
+- `selected_retail_codes`
+- `prior_similarity_codes`
+- `overlap_type`
+- `overlap_confidence`
+- `strongest prior item`
+- `strongest prior codes`
+
+overlap_type:
+- `exact_primary_overlap`
+- `related_primary_overlap`
+- `retail_overlap_only`
+- `same_class_only`
+- `no_material_overlap`
+
+## 5. 사용자 설명 원칙
+사용자에게는 코드 체계보다 결과 이유를 보여준다.
+
+표시 예:
+- 금융
+  - `오렌G트리의 지정항목 중 금융 또는 재무에 관한 정보제공업이 S0201/S120401로 직접 겹쳐 실질 충돌 위험이 높습니다.`
+- 보험
+  - `같은 36류이지만 prior item에 S0301 직접 겹침이 없어 보조 검토군으로만 반영했습니다.`
+- 부동산
+  - `같은 36류이지만 prior item에 S1212 직접 겹침이 없어 보조 검토군으로만 반영했습니다.`
+- 법무
+  - `45류 S120402와 직접 겹치는 prior item이 없어 상대적 거절사유 위험이 낮습니다.`
+
+## 6. 판매업 코드
+- 판매업 코드는 별도 계층으로 저장한다.
+- 판매업 코드만 같다고 자동 유사로 올리지 않는다.
+- underlying goods relation이 있으면 `related_primary_overlap`으로 승격할 수 있다.
+- underlying goods relation이 없으면 `retail_overlap_only` 약신호로만 반영한다.
+
+## 7. 점수 반영 원칙
+- direct overlap이 있으면 final probability cap을 강하게 건다.
+- same-class-only와 exact overlap을 같은 밴드로 처리하지 않는다.
+- direct overlap인데도 75가 유지되면 실패다.
+- UI는 단순하게 유지하되, 내부 평가는 item-level SC 기준으로 엄격하게 수행한다.
+
+## 8. 상품군 선택 → 코드 자동 도출 규칙
+
+### 8.1 subgroup → primary code 도출
+- 사용자가 상품군(subgroup)을 선택하면 시스템이 자동으로 primary code를 결정한다.
+- `nice_group_catalog.json`의 `similarity_codes` 필드가 primary codes다.
+- `candidate_similarity_codes` 필드는 후보 목록이며, 일부만 primary로 승격된다.
+
+주요 매핑 기준값:
+| 상품군 | primary code |
+|---|---|
+| 금융, 통화 및 은행업 | S0201 |
+| 보험서비스업 | S0301 |
+| 부동산업 | S1212 |
+| 법무서비스업 | S120402 |
+
+### 8.2 코드 도출 실패 → 검색은 계속된다
+- `similarity_codes`가 없거나 도출에 실패해도 검색을 중단하지 않는다.
+- `mapping_failed_reason`에 실패 사유를 기록하고, class_only fallback으로 계속 진행한다.
+- SC 없이 `TN + class`만으로도 유의미한 prior candidates를 회수할 수 있다.
+
+### 8.3 코드 도출 → 검색 → 파싱 → overlap 평가 파이프라인
+```
+사용자 subgroup 선택
+  → similarity_codes (primary) 도출
+  → build_kipris_search_plan (항상 class_only + text_fallback 포함)
+  → KIPRIS 검색 실행
+  → enrich_search_results_with_item_details (prior designated items 파싱)
+  → normalize_selected_input (primary/related/retail codes 확정)
+  → overlap_type 계산 (per prior item × per selected code)
+  → Stage 2 score cap 결정
+  → min(Stage 1 cap, Stage 2) → 최종 점수
+```
+
+## 9. 검색 파이프라인 디버그 정보 표시
+
+개발/검증 모드에서 아래 정보를 반드시 표시한다:
+- `selected_subgroup`: 사용자가 선택한 상품군 이름
+- `selected_primary_codes`: 도출된 primary 유사군코드
+- `selected_related_codes`: 도출된 related 유사군코드
+- `selected_retail_codes`: 도출된 retail 유사군코드
+- `mapping_failed_reason`: 코드 도출 실패 사유 (있을 경우)
+- `search_queries_attempted`: 실행된 검색 쿼리 목록
+- `search_hits_per_query`: 각 쿼리의 결과 건수
+- `detail_parse_count`: item-level 파싱 성공 건수
+- `strongest_prior_item`: 가장 강한 충돌 prior item label
+- `strongest_prior_codes`: 해당 item의 SC codes
+- `overlap_type`: 최종 결정된 overlap 유형
+
+앱 UI에서는 "검색 파이프라인 디버그" 접기 섹션으로 표시하며, PDF 보고서에서는 "Search Debug" 섹션으로 출력한다.

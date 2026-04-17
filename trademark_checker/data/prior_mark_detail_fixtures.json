@@ -1,0 +1,57 @@
+[
+  {
+    "match_names": ["오렌G트리"],
+    "source_field": "fixture:docs/유사군코드관련로직/키프리스 오렌G트리 유사군코드 검색이미지.jpg",
+    "parsing_confidence": "high",
+    "designated_items": [
+      {
+        "prior_item_label": "금융 또는 재무에 관한 정보제공업",
+        "prior_class_no": 36,
+        "prior_similarity_codes": ["S0201", "S120401"],
+        "prior_item_type": "service"
+      },
+      {
+        "prior_item_label": "금융 또는 재무에 관한 상담업",
+        "prior_class_no": 36,
+        "prior_similarity_codes": ["S0201", "S120401"],
+        "prior_item_type": "service"
+      },
+      {
+        "prior_item_label": "금융 및 투자 관련 정보제공/자문/상담 및 연구업",
+        "prior_class_no": 36,
+        "prior_similarity_codes": ["S0201"],
+        "prior_item_type": "service"
+      },
+      {
+        "prior_item_label": "금융투자 관련 인터넷을 통한 정보제공 및 분석업",
+        "prior_class_no": 36,
+        "prior_similarity_codes": ["S0201"],
+        "prior_item_type": "service"
+      },
+      {
+        "prior_item_label": "주식/증권시장 정보제공업",
+        "prior_class_no": 36,
+        "prior_similarity_codes": ["S0201"],
+        "prior_item_type": "service"
+      },
+      {
+        "prior_item_label": "인터넷 및 기타 통신네트워크를 이용한 오디오/비디오/멀티미디어 방송업",
+        "prior_class_no": 38,
+        "prior_similarity_codes": ["S0601", "S0701"],
+        "prior_item_type": "service"
+      },
+      {
+        "prior_item_label": "인터넷교육방송업",
+        "prior_class_no": 38,
+        "prior_similarity_codes": ["S0601", "S0701"],
+        "prior_item_type": "service"
+      },
+      {
+        "prior_item_label": "인터넷을 통한 컴퓨터교육 관련 정보제공업",
+        "prior_class_no": 41,
+        "prior_similarity_codes": ["S120903", "S120904", "S120905", "S120907", "S120999", "S121001"],
+        "prior_item_type": "service"
+      }
+    ]
+  }
+]

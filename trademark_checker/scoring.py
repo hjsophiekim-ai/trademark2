@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 from typing import Iterable, List
 
 from goods_scope import classify_product_similarity, normalize_selected_input
-from legal_scope import SCOPE_GROUP_LABELS, build_scope_counts
+from legal_scope import SCOPE_GROUP_LABELS, build_scope_counts, evaluate_absolute_refusal
 from prior_mark_status import (
     merge_refusal_analysis as merge_refusal_analysis_payload,
     normalize_refusal_analysis as normalize_refusal_analysis_payload,
@@ -44,6 +44,33 @@ GROUP_LABEL = {
     "group_same_class": "동일 류",
     "group_related_market": "경제적 견련성 있는 타 류",
     "group_irrelevant": "무관한 타 류",
+}
+OVERLAP_TYPE_ALIASES = {
+    "exact_primary_code_overlap": "exact_primary_overlap",
+    "related_primary_code_overlap": "related_primary_overlap",
+    "retail_code_with_goods_overlap": "related_primary_overlap",
+    "retail_code_overlap_only": "retail_overlap_only",
+    "same_class_with_context": "same_class_only",
+    "same_class_only": "same_class_only",
+    "cross_kind_exception": "no_material_overlap",
+    "no_material_overlap": "no_material_overlap",
+    "same_code": "exact_primary_overlap",
+    "same_class": "same_class_only",
+    "exception": "no_material_overlap",
+}
+OVERLAP_TYPE_LABELS = {
+    "exact_primary_overlap": "기본 유사군코드 직접 일치",
+    "related_primary_overlap": "근접 유사군코드 또는 기초상품 연계 충돌",
+    "retail_overlap_only": "판매업 코드만 일치",
+    "same_class_only": "동일 류 보조 검토",
+    "no_material_overlap": "실질 중첩 없음",
+}
+OVERLAP_TYPE_RANKS = {
+    "exact_primary_overlap": 5,
+    "related_primary_overlap": 4,
+    "retail_overlap_only": 2,
+    "same_class_only": 1,
+    "no_material_overlap": 0,
 }
 STATUS_PROFILES = (
     {
@@ -325,65 +352,18 @@ def _distinctiveness_analysis(
     trademark_type: str,
     specific_product: str,
     selected_fields: Iterable[dict],
+    selected_classes: Iterable[int | str] | None = None,
+    selected_codes: Iterable[str] | None = None,
 ) -> dict:
-    normalized = _normalize(trademark_name)
-    reasons: list[str] = []
-    score_adjustment = 0
-
-    if is_coined:
-        score_adjustment += 18
-        reasons.append("조어상표로 입력되어 식별력 측면에서 유리합니다.")
-    else:
-        score_adjustment -= 8
-        reasons.append("일반 단어 계열로 입력되어 식별력은 조어상표보다 약하게 봅니다.")
-
-    if len(normalized) <= 2:
-        score_adjustment -= 12
-        reasons.append("문자 수가 짧아 제33조 제1항 제6호(간단하고 흔한 표장) 위험이 있습니다.")
-    elif len(normalized) >= 6:
-        score_adjustment += 3
-
-    if not is_coined and normalized in COMMON_WORDS:
-        score_adjustment -= 14
-        reasons.append("일상적 표현과 가까워 보통명칭·관용표장으로 보일 위험이 있습니다.")
-
-    name_tokens = set(_tokenize(trademark_name))
-    context_tokens = set(_tokenize(specific_product))
-    for field in selected_fields:
-        context_tokens.update(_tokenize(field.get("description", field.get("설명", ""))))
-    descriptive_overlap = sorted(name_tokens & context_tokens)
-    if descriptive_overlap and not is_coined:
-        score_adjustment -= 10
-        reasons.append(
-            "지정상품과 직접 맞닿는 표현이 포함되어 성질표시(제33조) 쟁점이 생길 수 있습니다: "
-            + ", ".join(descriptive_overlap[:3])
-        )
-
-    if trademark_type == "문자+로고":
-        score_adjustment += 2
-    elif trademark_type == "로고만":
-        score_adjustment += 1
-
-    if score_adjustment <= -20:
-        label = "거절 가능성 큼"
-        level = "high"
-    elif score_adjustment < 0:
-        label = "식별력 약함"
-        level = "medium"
-    elif is_coined:
-        label = "식별력 문제 없음"
-        level = "low"
-    else:
-        label = "보통 수준"
-        level = "low"
-
-    return {
-        "label": label,
-        "level": level,
-        "score_adjustment": score_adjustment,
-        "reasons": reasons,
-        "summary": reasons[0] if reasons else "식별력상 특별한 약점은 크지 않습니다.",
-    }
+    return evaluate_absolute_refusal(
+        trademark_name=trademark_name,
+        trademark_type=trademark_type,
+        is_coined=is_coined,
+        specific_product=specific_product,
+        selected_fields=selected_fields,
+        selected_classes=selected_classes,
+        selected_codes=selected_codes,
+    )
 
 def _status_profile(status: str) -> dict:
     return get_status_profile(status)
@@ -458,6 +438,23 @@ def _normalize_prior_item(item: dict, trademark_name: str) -> dict:
     name = strip_html(item.get("trademarkName", item.get("trademark_name", "알 수 없음")))
     classes = _extract_classes(item.get("classificationCode", item.get("class", "")))
     queried_codes = [code for code in item.get("queried_codes", []) if str(code).strip()]
+    prior_designated_items = []
+    for raw in item.get("prior_designated_items", []):
+        if not isinstance(raw, dict):
+            continue
+        prior_designated_items.append(
+            {
+                "prior_item_label": strip_html(raw.get("prior_item_label", "")),
+                "prior_class_no": _clean_class_text(raw.get("prior_class_no", "")) or "",
+                "prior_similarity_codes": _dedupe_preserve(_split_values(raw.get("prior_similarity_codes", []))),
+                "prior_item_type": raw.get("prior_item_type", ""),
+                "prior_underlying_goods_codes": _dedupe_preserve(
+                    _split_values(raw.get("prior_underlying_goods_codes", []))
+                ),
+                "source_page_or_source_field": raw.get("source_page_or_source_field", ""),
+                "parsing_confidence": raw.get("parsing_confidence", ""),
+            }
+        )
     status_profile = _status_profile(
         item.get("registerStatus", item.get("registrationStatus", item.get("status", "-")))
     )
@@ -480,6 +477,7 @@ def _normalize_prior_item(item: dict, trademark_name: str) -> dict:
         "mark_identity": _mark_identity(trademark_name, name),
         "queried_codes": queried_codes,
         "similarityGroupCode": item.get("similarityGroupCode") or item.get("similarGoodsCode") or "",
+        "prior_designated_items": prior_designated_items,
         "reason_summary": refusal_analysis["reason_summary"],
         "refusal_analysis": refusal_analysis,
     }
@@ -506,6 +504,29 @@ def _merge_prior_items(items: List[dict], trademark_name: str) -> list[dict]:
         current_codes = set(current.get("queried_codes", []))
         current_codes.update(normalized.get("queried_codes", []))
         current["queried_codes"] = sorted(current_codes)
+        designated_by_key: dict[tuple[str, str, tuple[str, ...]], dict] = {}
+        for designated in [*current.get("prior_designated_items", []), *normalized.get("prior_designated_items", [])]:
+            key_name = (
+                designated.get("prior_item_label", ""),
+                str(designated.get("prior_class_no", "")),
+                tuple(designated.get("prior_similarity_codes", [])),
+            )
+            existing = designated_by_key.get(key_name)
+            if existing is None:
+                designated_by_key[key_name] = designated
+                continue
+            existing_codes = set(existing.get("prior_underlying_goods_codes", []))
+            existing_codes.update(designated.get("prior_underlying_goods_codes", []))
+            existing["prior_underlying_goods_codes"] = sorted(existing_codes)
+            if not existing.get("source_page_or_source_field") and designated.get("source_page_or_source_field"):
+                existing["source_page_or_source_field"] = designated["source_page_or_source_field"]
+            confidence_order = {"exact": 4, "high": 3, "medium": 2, "low": 1, "": 0}
+            if confidence_order.get(designated.get("parsing_confidence", ""), 0) > confidence_order.get(
+                existing.get("parsing_confidence", ""),
+                0,
+            ):
+                existing["parsing_confidence"] = designated.get("parsing_confidence", "")
+        current["prior_designated_items"] = list(designated_by_key.values())
 
         current_classes = set(current.get("classes", []))
         current_classes.update(normalized.get("classes", []))
@@ -561,7 +582,51 @@ def _product_similarity(item: dict, context: dict) -> dict:
     return {
         **product,
         "group": GROUP_ALIAS[product["bucket"]],
+        # overlap_type이 없으면 기존 호환 값 사용
+        "overlap_type": product.get("overlap_type", product["bucket"]),
+        "overlap_codes": product.get("overlap_codes", []),
     }
+
+
+def _canonical_overlap_type(value: str) -> str:
+    raw = str(value or "").strip()
+    return OVERLAP_TYPE_ALIASES.get(raw, raw or "no_material_overlap")
+
+
+def _overlap_rank(item: dict) -> int:
+    return OVERLAP_TYPE_RANKS.get(_canonical_overlap_type(item.get("overlap_type")), 0)
+
+
+def _overlap_weight(item: dict) -> float:
+    overlap_type = _canonical_overlap_type(item.get("overlap_type", item.get("product_bucket", "excluded")))
+    overlap_basis = item.get("overlap_basis", "")
+    weights = {
+        "exact_primary_overlap": 1.72,
+        "related_primary_overlap": 0.98,
+        "retail_overlap_only": 0.22,
+        "same_class_only": 0.18,
+        "no_material_overlap": 0.1 if overlap_basis == "cross_kind_exception" else 0.0,
+    }
+    if overlap_basis == "retail_with_base_goods_overlap":
+        return 0.74
+    return float(item.get("product_penalty_weight", weights.get(overlap_type, 0.0)))
+
+
+def _strongest_overlap_item(items: list[dict]) -> dict | None:
+    if not items:
+        return None
+    return max(
+        items,
+        key=lambda row: (
+            _overlap_rank(row),
+            row.get("primary_code_overlap_count", 0),
+            row.get("related_code_overlap_count", 0),
+            row.get("retail_code_overlap_count", 0),
+            row.get("product_similarity_score", row.get("overlap_score_raw", 0)),
+            row.get("confusion_score", 0),
+            row.get("mark_similarity", 0),
+        ),
+    )
 
 
 def _enrich_mark_similarity(item: dict, trademark_name: str, trademark_type: str) -> dict:
@@ -641,55 +706,53 @@ def _score_from_analysis(
     is_coined: bool,
     trademark_type: str,
 ) -> int:
-    score = 72 + distinctiveness["score_adjustment"]
+    del distinctiveness
+    score = 92
     normalized = _normalize(trademark_name)
 
     if trademark_type == "문자+로고":
-        score += 2
-    elif trademark_type == "로고만":
         score += 1
+    elif trademark_type == "로고만":
+        score += 0
 
     if len(normalized) >= 6:
-        score += 3
+        score += 1
     elif len(normalized) <= 2:
-        score -= 8
+        score -= 2
 
     if " " in trademark_name.strip():
-        score -= 3
+        score -= 1
 
     if not is_coined and normalized in COMMON_WORDS:
-        score -= 8
+        score -= 3
 
     live_candidates = [item for item in candidates if item.get("counts_toward_final_score")]
     for item in live_candidates:
-        group_weight = item.get(
-            "product_penalty_weight",
-            {"same_code": 1.7, "same_class": 1.4, "exception": 0.22}.get(item["product_bucket"], 0.0),
+        overlap_type = _canonical_overlap_type(item.get("overlap_type", item.get("product_bucket", "excluded")))
+        group_weight = _overlap_weight(item)
+        overlap_signal = max(
+            item.get("overlap_score_raw", item.get("product_similarity_score", 0)) / 100,
+            min(
+                1.0,
+                item.get("primary_code_overlap_count", 0) * 0.35
+                + item.get("related_code_overlap_count", 0) * 0.18
+                + item.get("retail_code_overlap_count", 0) * 0.12,
+            ),
         )
         identity_multiplier = 1.0
         if item.get("mark_identity") == "exact":
             identity_multiplier = 1.28
-            if item.get("product_bucket") == "same_code":
+            if overlap_type == "exact_primary_overlap":
                 identity_multiplier = 1.42
         penalty = (
             item["mark_similarity"] / 100
-            * item["product_similarity_score"] / 100
+            * overlap_signal
             * item.get("status_score_weight", 0.0)
-            * 45
+            * 48
             * group_weight
             * identity_multiplier
         )
         score -= penalty
-
-    severe_conflict = any(
-        item.get("counts_toward_final_score")
-        and item["product_similarity_score"] >= 85
-        and item["mark_similarity"] >= 90
-        and item["confusion_score"] >= 90
-        for item in candidates
-    )
-    if not severe_conflict:
-        score = max(score, 12)
 
     return max(0, min(100, int(round(score))))
 
@@ -704,6 +767,49 @@ def _grouped_priors(included: list[dict], excluded: list[dict]) -> dict:
     for item in included + excluded:
         grouped[item.get("group_name", GROUP_ALIAS.get(item.get("product_bucket", "excluded"), GROUP_ALIAS["excluded"]))].append(item)
     return grouped
+
+
+def _build_overlap_type_summary(included: list[dict], context: dict) -> list[str]:
+    """overlap_type별 설명 생성 (explainability 강화)."""
+    msgs = []
+    selected_primary = context.get("selected_primary_codes", [])
+    exact_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "exact_primary_overlap"]
+    related_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "related_primary_overlap"]
+    retail_only_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "retail_overlap_only"]
+    same_class_only_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "same_class_only"]
+
+    if exact_items:
+        codes_str = ", ".join(sorted(set(c for item in exact_items for c in item.get("overlap_codes", []))))
+        msgs.append(
+            f"기본 유사군코드 직접 일치 후보 {len(exact_items)}건 확인 "
+            f"(선택 코드: {', '.join(selected_primary)}, 일치 코드: {codes_str or '검색 코드 기준'}). "
+            f"실질 충돌 후보로 반영했습니다."
+        )
+    if related_items:
+        basis_items = [item for item in related_items if item.get("overlap_basis") == "retail_with_base_goods_overlap"]
+        if basis_items:
+            msgs.append(
+                f"판매업 코드와 기초 상품군까지 연결되는 후보 {len(basis_items)}건은 "
+                "retail-only가 아니라 related overlap으로 승격해 반영했습니다."
+            )
+        else:
+            msgs.append(
+                f"직접 일치는 아니지만 근접 코드군이 겹치는 후보 {len(related_items)}건은 "
+                "same-class-only보다 강하게 반영했습니다."
+            )
+    if retail_only_items:
+        msgs.append(
+            f"판매업 코드(S20xx)만 겹치는 후보 {len(retail_only_items)}건은 "
+            f"기초 상품군이 달라 자동 유사 처리를 하지 않았습니다. "
+            f"판매업 코드 동일 ≠ 상품 유사임을 유의하세요."
+        )
+    if same_class_only_items and not exact_items:
+        msgs.append(
+            f"동일 니스류 보조 검토군 {len(same_class_only_items)}건은 "
+            f"유사군코드 직접 일치가 없어 약한 가중치만 적용했습니다. "
+            f"금융업/부동산업/법무서비스업 등 같은 류 내에서도 코드가 다르면 충돌로 보지 않습니다."
+        )
+    return msgs
 
 
 def _build_exclusion_summary(excluded: list[dict]) -> str:
@@ -745,64 +851,106 @@ def _calibrate_score(
     included: list[dict],
     distinctiveness: dict,
     is_coined: bool,
-) -> tuple[int, list[str]]:
+) -> tuple[int, list[str], dict]:
+    del distinctiveness
     explanations = []
     live_blockers = [item for item in included if item.get("counts_toward_final_score")]
     historical_references = [item for item in included if not item.get("counts_toward_final_score")]
     actual_risk_count = sum(1 for item in live_blockers if item.get("confusion_score", 0) >= 65)
-    exact_live_same_code = [
-        item
-        for item in live_blockers
-        if item.get("product_bucket") == "same_code" and item.get("mark_identity") == "exact"
-    ]
-    same_code_high = [
-        item
-        for item in live_blockers
-        if item.get("product_bucket") == "same_code"
-        and max(item.get("mark_similarity", 0), item.get("phonetic_similarity", 0)) >= 85
-    ]
-    same_class_medium = [
-        item
-        for item in live_blockers
-        if item.get("product_bucket") == "same_class"
-        and item.get("product_similarity_score", 0) >= 40
-        and item.get("mark_similarity", 0) >= 70
-    ]
-    related_only = bool(live_blockers) and all(item.get("product_bucket") == "exception" for item in live_blockers)
 
     calibrated = raw_score
+    cap_info = {"cap_reason": "", "stage2_cap_upper": 100, "cap_applied_overlap_type": "no_material_overlap"}
 
     if not live_blockers:
-        if distinctiveness["level"] == "high":
-            low, high = 60, 72
-            explanations.append("식별력 자체가 강하게 약해 실질 장애물이 없어도 60~72 구간에서 점수를 형성했습니다.")
-        elif distinctiveness["level"] == "medium":
-            low, high = 72, 82
-            explanations.append("식별력 약함은 있으나 실질 장애물 선행상표가 없어 72~82 구간으로 보정했습니다.")
-        elif is_coined:
+        if is_coined:
             low, high = 88, 95
-            explanations.append("조어상표이고 실질 장애물 선행상표가 0건이어서 88~95 구간으로 캘리브레이션했습니다.")
+            explanations.append("상대적 거절사유 단계에서는 실질 장애물 선행상표가 0건이어서 88~95 구간으로 유지했습니다.")
         else:
             low, high = 82, 90
-            explanations.append("식별력 보통 이상이며 실질 장애물 선행상표가 0건이어서 82~90 구간으로 캘리브레이션했습니다.")
+            explanations.append("상대적 거절사유 단계에서는 실질 장애물 선행상표가 0건이어서 82~90 구간으로 유지했습니다.")
         calibrated = min(max(calibrated, low), high)
         if historical_references:
             explanations.append(_build_reference_summary(historical_references))
-        return calibrated, explanations
+        return calibrated, explanations, cap_info
 
-    if exact_live_same_code:
-        calibrated = min(calibrated, 18)
-        explanations.append("등록 또는 출원 상태의 동일 표장이 동일 유사군코드에서 확인되어 최고 위험군으로 반영했습니다.")
-    elif same_code_high:
+    strongest = _strongest_overlap_item(live_blockers)
+    strongest_type = _canonical_overlap_type(strongest.get("overlap_type")) if strongest else "no_material_overlap"
+    strongest_basis = strongest.get("overlap_basis", "") if strongest else ""
+    mark_similarity = int(strongest.get("mark_similarity", 0)) if strongest else 0
+    confusion_score = int(strongest.get("confusion_score", 0)) if strongest else 0
+    primary_match_count = int(strongest.get("primary_code_overlap_count", 0)) if strongest else 0
+
+    if strongest_type == "exact_primary_overlap":
+        cap = 45
+        if mark_similarity >= 90:
+            cap = 34
+        elif mark_similarity >= 85:
+            cap = 40
+        elif mark_similarity >= 80:
+            cap = 45
+        if strongest.get("mark_identity") == "exact":
+            cap = min(cap, 28)
+        if primary_match_count >= 2:
+            cap = max(20, cap - 5)
+        calibrated = min(calibrated, max(20, cap))
+        cap_info = {
+            "cap_reason": "registered prior + high mark similarity + direct code overlap",
+            "stage2_cap_upper": max(20, cap),
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append(
+            "등록 상태 선행상표와 기본 유사군코드가 직접 겹칩니다. "
+            "direct overlap이 식별력 보정보다 우선하므로 등록가능성을 20~45 구간으로 강하게 제한했습니다."
+        )
+    elif strongest_type == "related_primary_overlap":
+        lower = 35 if mark_similarity >= 80 else 42
+        upper = 50 if strongest_basis != "retail_with_base_goods_overlap" else 55
+        calibrated = min(max(calibrated, lower), upper)
+        cap_info = {
+            "cap_reason": "registered prior + high mark similarity + related code overlap",
+            "stage2_cap_upper": upper,
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append(
+            "직접 일치는 아니지만 근접 코드군 또는 기초상품 연계가 확인되어 "
+            "related overlap 위험대로 35~50 구간 중심으로 보정했습니다."
+        )
+    elif strongest_type == "same_class_only":
+        calibrated = min(max(calibrated, 60), 75)
+        cap_info = {
+            "cap_reason": "same class only without item-level SC overlap",
+            "stage2_cap_upper": 75,
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append(
+            "같은 니스류 보조 검토군만 존재해 same-class-only 구간(60~75)으로 제한했습니다. "
+            "직접 코드 충돌과 같은 수준으로 감점하지는 않았습니다."
+        )
+    elif strongest_type == "retail_overlap_only":
+        calibrated = min(max(calibrated, 64), 80)
+        cap_info = {
+            "cap_reason": "retail code overlap only without underlying goods overlap",
+            "stage2_cap_upper": 80,
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append(
+            "판매업 코드만 같고 기초 상품군이 달라 retail-only 약신호로만 반영했습니다."
+        )
+    elif strongest_basis == "cross_kind_exception":
+        calibrated = min(max(calibrated, 70), 86)
+        cap_info = {
+            "cap_reason": "cross-kind exception review only",
+            "stage2_cap_upper": 86,
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append("타 류 예외 검토군은 보조 경고 수준으로만 유지했습니다.")
+
+    if strongest_type == "exact_primary_overlap" and confusion_score >= 80:
         calibrated = min(calibrated, 45)
-        explanations.append("동일 유사군코드에서 호칭/표장 유사도가 높은 실질 장애물이 있어 점수를 강하게 낮췄습니다.")
-    elif same_class_medium:
-        calibrated = min(max(calibrated, 40), 75)
-        explanations.append("동일 류 보조 검토군에서 실질 장애물 후보의 표장 유사도가 중간 이상이라 40~75 구간의 리스크로 보정했습니다.")
-    elif related_only:
-        lower_bound = 60 if distinctiveness["level"] == "high" else 70
-        calibrated = max(calibrated, lower_bound)
-        explanations.append("타 류 예외군 실질 장애물만 존재해 과도한 감점을 막고 보조 경고 수준으로 유지했습니다.")
+        cap_info["stage2_cap_upper"] = min(cap_info["stage2_cap_upper"], 45)
+    if strongest_type == "related_primary_overlap" and confusion_score >= 80:
+        calibrated = min(calibrated, 50)
+        cap_info["stage2_cap_upper"] = min(cap_info["stage2_cap_upper"], 50)
 
     explanations.append(
         f"상품 유사성 필터 통과 후보 {len(included)}건 중 최종 점수에 직접 반영한 실질 장애물은 {len(live_blockers)}건입니다."
@@ -814,7 +962,7 @@ def _calibrate_score(
     else:
         explanations.append("실질 장애물 후보는 있으나 실제 충돌 위험도는 제한적으로 평가했습니다.")
 
-    return calibrated, explanations
+    return calibrated, explanations, cap_info
 
 
 def calculate_score(
@@ -830,6 +978,8 @@ def calculate_score(
         trademark_type=trademark_type,
         specific_product="",
         selected_fields=[],
+        selected_classes=[],
+        selected_codes=[],
     )
     candidates = []
     for item in results:
@@ -882,6 +1032,8 @@ def evaluate_registration(
         trademark_type=trademark_type,
         specific_product=specific_product,
         selected_fields=selected_fields,
+        selected_classes=context.get("selected_nice_classes", []),
+        selected_codes=context.get("selected_similarity_codes", []),
     )
 
     normalized_priors = _merge_prior_items(prior_items, trademark_name)
@@ -895,6 +1047,19 @@ def evaluate_registration(
         payload = {
             **item,
             "product_bucket": product["bucket"],
+            "overlap_type": product.get("overlap_type", product["bucket"]),
+            "overlap_basis": product.get("overlap_basis", ""),
+            "overlap_codes": product.get("overlap_codes", []),
+            "primary_overlap_codes": product.get("primary_overlap_codes", []),
+            "related_overlap_codes": product.get("related_overlap_codes", []),
+            "retail_overlap_codes": product.get("retail_overlap_codes", []),
+            "primary_code_overlap_count": product.get("primary_code_overlap_count", 0),
+            "related_code_overlap_count": product.get("related_code_overlap_count", 0),
+            "retail_code_overlap_count": product.get("retail_code_overlap_count", 0),
+            "strongest_matching_prior_item": product.get("strongest_matching_prior_item", item.get("trademarkName", "")),
+            "strongest_matching_prior_codes": product.get("strongest_matching_prior_codes", []),
+            "overlap_confidence": product.get("overlap_confidence", "low"),
+            "overlap_score_raw": product.get("overlap_score_raw", product["score"]),
             "scope_bucket": product["scope_bucket"],
             "scope_bucket_label": product["scope_bucket_label"],
             "group_name": product["group"],
@@ -938,9 +1103,12 @@ def evaluate_registration(
         for item in historical_references
         if item.get("refusal_analysis", {}).get("directly_relevant")
     ]
+    strongest_live = _strongest_overlap_item(live_blockers)
 
     raw_score = _score_from_analysis(trademark_name, included, distinctiveness, is_coined, trademark_type)
-    score, calibration_notes = _calibrate_score(raw_score, included, distinctiveness, is_coined)
+    relative_score, calibration_notes, cap_info = _calibrate_score(raw_score, included, distinctiveness, is_coined)
+    absolute_cap = int(distinctiveness.get("absolute_probability_cap", 95))
+    score = min(absolute_cap, relative_score)
     band = get_score_band(score)
     grouped_counts = _group_counts(bucket_counts)
     scope_counts = build_scope_counts(bucket_counts)
@@ -950,10 +1118,21 @@ def evaluate_registration(
 
     if live_blockers:
         top = live_blockers[0]
+        overlap_label = OVERLAP_TYPE_LABELS.get(_canonical_overlap_type(top.get("overlap_type")), top.get("product_similarity_label", "-"))
+        overlap_codes = ", ".join(top.get("strongest_matching_prior_codes", []) or top.get("overlap_codes", []))
+        strongest_prior_item_label = top.get("strongest_matching_prior_item", "")
         confusion_summary = (
             f"가장 주의할 선행상표는 '{top['trademarkName']}'이며 "
             f"{top['survival_label']}로서 표장 유사도 {top['mark_similarity']}%, "
-            f"상품 유사도 {top['product_similarity_score']}%, 상태 반영 후 혼동위험 {top['confusion_score']}%입니다."
+            f"상품 유사도 {top['product_similarity_score']}%, 상태 반영 후 혼동위험 {top['confusion_score']}%입니다. "
+            + (
+                f"가장 강한 prior designated item은 '{strongest_prior_item_label}'이며 "
+                if strongest_prior_item_label
+                else ""
+            )
+            + f"주요 overlap은 {overlap_label}"
+            + (f" ({overlap_codes})" if overlap_codes else "")
+            + "입니다."
         )
     elif historical_references:
         top = historical_references[0]
@@ -961,17 +1140,39 @@ def evaluate_registration(
             f"상품 유사성 필터를 통과한 후보는 있으나 현재는 '{top['trademarkName']}' 같은 "
             f"{top['survival_label']}만 확인되어 최종 점수에는 직접 반영하지 않았습니다."
         )
+    elif distinctiveness.get("absolute_risk_level") in {"high", "fatal"}:
+        confusion_summary = (
+            "선행상표 충돌은 크지 않더라도 절대적 거절사유(Stage 1)에서 식별력 또는 공익상 리스크가 높아 "
+            f"등록가능성 상한을 {absolute_cap}%로 먼저 제한했습니다."
+        )
     else:
         confusion_summary = "상품 유사성 필터를 통과한 선행상표가 없어 상대적 거절사유 리스크는 낮게 평가됩니다."
 
-    signals = [distinctiveness["summary"]]
+    # overlap_type 별 건수 집계
+    overlap_type_counts: dict[str, int] = {}
+    for item in included:
+        ot = _canonical_overlap_type(item.get("overlap_type", "unknown"))
+        overlap_type_counts[ot] = overlap_type_counts.get(ot, 0) + 1
+
+    # explainability: overlap_type별 설명 생성
+    overlap_explanations = _build_overlap_type_summary(included, context)
+
+    signals = [
+        (
+            f"절대적 거절사유(Stage 1): {distinctiveness['summary']} "
+            f"(risk {distinctiveness.get('absolute_risk_level', 'none')}, "
+            f"cap {distinctiveness.get('absolute_probability_cap', 95)}%)"
+        )
+    ]
     signals.append(
-        "상품 유사성 필터 결과: "
-        f"실질 충돌 후보 {scope_counts['exact_scope_candidates']}건, "
+        "상품 유사성 필터 결과(item-level 유사군코드 비교): "
+        f"실질 충돌 후보(코드 직접 일치) {scope_counts['exact_scope_candidates']}건, "
         f"동일 니스류 보조 검토군 {scope_counts['same_class_candidates']}건, "
         f"상품-서비스업 예외 검토군 {scope_counts['related_market_candidates']}건, "
         f"제외 후보 {scope_counts['irrelevant_candidates']}건"
     )
+    if overlap_explanations:
+        signals.extend(overlap_explanations)
     signals.append(f"실질 장애물 {len(live_blockers)}건 / 역사적 참고자료 {len(historical_references)}건")
     if included:
         top = included[0]
@@ -979,13 +1180,31 @@ def evaluate_registration(
             f"상위 후보 '{top['trademarkName']}'는 표장 유사도 {top['mark_similarity']}%, "
             f"상품 유사도 {top['product_similarity_score']}%, 상태 반영 후 혼동위험 {top['confusion_score']}%입니다."
         )
+        signals.append(
+            f"가장 강한 overlap 유형은 {OVERLAP_TYPE_LABELS.get(_canonical_overlap_type(top.get('overlap_type')), top.get('overlap_type', '-'))}"
+            + (
+                f"이며 대응 코드 {', '.join(top.get('strongest_matching_prior_codes', []) or top.get('overlap_codes', []))}"
+                if (top.get("strongest_matching_prior_codes") or top.get("overlap_codes"))
+                else "입니다."
+            )
+        )
     else:
         signals.append("상품 관련성이 없는 타 류 후보는 강한 감점에 반영하지 않았습니다.")
     signals.extend(calibration_notes)
+    signals.append(
+        f"최종 등록가능성은 Stage 1 상한 {absolute_cap}%와 Stage 2 상대적 거절사유 점수 {relative_score}% 중 더 낮은 값을 사용했습니다."
+    )
+    if cap_info.get("cap_reason"):
+        signals.append(
+            f"Stage 2 cap reason: {cap_info['cap_reason']} / upper cap {cap_info.get('stage2_cap_upper', relative_score)}%"
+        )
 
     return {
         "score": score,
         "raw_score": raw_score,
+        "stage1_absolute_cap": absolute_cap,
+        "stage2_relative_cap_adjusted": relative_score,
+        "final_registration_probability": score,
         "band": band,
         "signals": signals,
         "top_prior": included[:5],
@@ -1002,11 +1221,22 @@ def evaluate_registration(
         "excluded_prior_count": len(excluded),
         "actual_risk_prior_count": actual_risk_count,
         "total_prior_count": len(normalized_priors),
+        "strongest_overlap_type": _canonical_overlap_type(strongest_live.get("overlap_type")) if strongest_live else "no_material_overlap",
+        "strongest_matching_prior_item": strongest_live.get("strongest_matching_prior_item", "") if strongest_live else "",
+        "strongest_matching_prior_codes": strongest_live.get("strongest_matching_prior_codes", []) if strongest_live else [],
+        "primary_code_overlap_count": strongest_live.get("primary_code_overlap_count", 0) if strongest_live else 0,
+        "related_code_overlap_count": strongest_live.get("related_code_overlap_count", 0) if strongest_live else 0,
+        "retail_code_overlap_count": strongest_live.get("retail_code_overlap_count", 0) if strongest_live else 0,
+        "overlap_confidence": strongest_live.get("overlap_confidence", "none") if strongest_live else "none",
+        "overlap_score_raw": strongest_live.get("overlap_score_raw", 0) if strongest_live else 0,
         "selected_kind": context.get("selected_kind"),
         "selected_groups": context.get("selected_groups", []),
         "selected_subgroups": context.get("selected_subgroups", []),
         "selected_nice_classes": context.get("selected_nice_classes", []),
         "selected_similarity_codes": context.get("selected_similarity_codes", []),
+        "selected_primary_codes": context.get("selected_primary_codes", []),
+        "selected_related_codes": context.get("selected_related_codes", []),
+        "selected_retail_codes": context.get("selected_retail_codes", []),
         "selected_keywords": context.get("selected_keywords", []),
         "specific_product_text": context.get("specific_product_text", specific_product),
         "group_counts": grouped_counts,
@@ -1014,8 +1244,22 @@ def evaluate_registration(
         "grouped_priors": _grouped_priors(included[:20], excluded[:20]),
         "exclusion_reason_summary": exclusion_reason_summary,
         "reference_summary": reference_summary,
+        "absolute_risk_level": distinctiveness.get("absolute_risk_level", "none"),
+        "absolute_refusal_bases": distinctiveness.get("absolute_refusal_bases", []),
+        "distinctiveness_score": distinctiveness.get("distinctiveness_score", 0),
+        "absolute_probability_cap": absolute_cap,
+        "acquired_distinctiveness_needed": distinctiveness.get("acquired_distinctiveness_needed", False),
         "distinctiveness": distinctiveness["label"],
         "distinctiveness_analysis": distinctiveness,
+        "absolute_refusal_analysis": {
+            "summary": distinctiveness.get("summary", "-"),
+            "risk_level": distinctiveness.get("absolute_risk_level", "none"),
+            "refusal_bases": distinctiveness.get("absolute_refusal_bases", []),
+            "distinctiveness_score": distinctiveness.get("distinctiveness_score", 0),
+            "probability_cap": absolute_cap,
+            "acquired_distinctiveness_needed": distinctiveness.get("acquired_distinctiveness_needed", False),
+            "reasons": distinctiveness.get("reasons", []),
+        },
         "product_similarity_analysis": {
             "summary": (
                 f"선행상표 {len(normalized_priors)}건 중 "
@@ -1052,9 +1296,48 @@ def evaluate_registration(
             "historical_reference_count": len(historical_references),
         },
         "score_explanation": {
-            "summary": " / ".join(calibration_notes) if calibration_notes else "최종 점수는 실질 장애물만 직접 반영했습니다.",
+            "summary": (
+                " / ".join(calibration_notes)
+                if calibration_notes
+                else "Stage 2 상대적 거절사유 점수를 계산한 뒤 Stage 1 상한과 합성했습니다."
+            ),
             "raw_score": raw_score,
+            "stage1_absolute_cap": absolute_cap,
+            "stage2_relative_cap_adjusted": relative_score,
+            "stage2_cap_upper": cap_info.get("stage2_cap_upper", relative_score),
+            "cap_reason": cap_info.get("cap_reason", ""),
             "final_score": score,
-            "notes": calibration_notes,
+            "notes": [
+                *calibration_notes,
+                (
+                    f"Stage 2 cap reason: {cap_info['cap_reason']} "
+                    f"(upper cap {cap_info.get('stage2_cap_upper', relative_score)}%)"
+                    if cap_info.get("cap_reason")
+                    else "Stage 2 cap reason: none"
+                ),
+                f"Stage 1 절대적 거절사유 상한: {absolute_cap}%",
+                f"Stage 2 상대적 거절사유 점수: {relative_score}%",
+                f"최종 등록가능성 = min(Stage 1, Stage 2) = {score}%",
+            ],
+        },
+        # item-level overlap_type 분석 결과 (explainability)
+        "overlap_type_analysis": {
+            "overlap_type_counts": overlap_type_counts,
+            "selected_primary_codes": context.get("selected_primary_codes", []),
+            "selected_related_codes": context.get("selected_related_codes", []),
+            "selected_retail_codes": context.get("selected_retail_codes", []),
+            "overlap_explanations": overlap_explanations,
+            "strongest_overlap_type": _canonical_overlap_type(strongest_live.get("overlap_type")) if strongest_live else "no_material_overlap",
+            "strongest_matching_prior_item": strongest_live.get("strongest_matching_prior_item", "") if strongest_live else "",
+            "strongest_matching_prior_codes": strongest_live.get("strongest_matching_prior_codes", []) if strongest_live else [],
+            "overlap_confidence": strongest_live.get("overlap_confidence", "none") if strongest_live else "none",
+            "cap_reason": cap_info.get("cap_reason", ""),
+            "stage2_cap_upper": cap_info.get("stage2_cap_upper", relative_score),
+            "summary": (
+                f"선택 코드 {context.get('selected_primary_codes', [])}와 "
+                f"선행상표를 item-level로 비교한 결과: "
+                + ", ".join(f"{k} {v}건" for k, v in overlap_type_counts.items())
+                if overlap_type_counts else "item-level 비교 후보 없음"
+            ),
         },
     }

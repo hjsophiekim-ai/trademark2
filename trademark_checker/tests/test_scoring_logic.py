@@ -113,7 +113,7 @@ class ScoringStatusTests(unittest.TestCase):
         top = result["top_prior"][0]
         self.assertEqual(top["scope_bucket"], "same_class_candidates")
         self.assertTrue(top["counts_toward_final_score"])
-        self.assertGreaterEqual(top["product_similarity_score"], 40)
+        self.assertLessEqual(top["product_similarity_score"], 24)
         self.assertLessEqual(result["score"], 75)
 
     def test_default_subgroup_codes_do_not_override_user_selected_similarity_code(self) -> None:

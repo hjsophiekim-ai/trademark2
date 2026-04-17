@@ -313,15 +313,11 @@
             "리본",
             "나비매듭리본"
           ],
-          "similarity_codes": [
-            "G4902"
-          ],
-          "candidate_similarity_codes": [
-            "G4902"
-          ],
-          "similarity_match_reason": "normalized_semantic_match",
-          "similarity_match_confidence": "high",
-          "similarity_fallback_used": false,
+          "similarity_codes": [],
+          "candidate_similarity_codes": [],
+          "similarity_match_reason": "same_class_fallback",
+          "similarity_match_confidence": "fallback",
+          "similarity_fallback_used": true,
           "nice_classes": [
             26
           ],
@@ -669,15 +665,11 @@
             "달걀",
             "식육, 생선, 가금 및 엽조수; 요리용 고기진액; 보존처리/냉동/건조 및 조리된 과일, 채소 및 해초; 젤리, 잼, 콤폿; 달걀; 우유, 치즈, 버터, 요구르트 및 기타 유제품; 식용 유지(油脂)"
           ],
-          "similarity_codes": [
-            "G0702"
-          ],
-          "candidate_similarity_codes": [
-            "G0702"
-          ],
-          "similarity_match_reason": "normalized_semantic_match",
-          "similarity_match_confidence": "high",
-          "similarity_fallback_used": false,
+          "similarity_codes": [],
+          "candidate_similarity_codes": [],
+          "similarity_match_reason": "same_class_fallback",
+          "similarity_match_confidence": "fallback",
+          "similarity_fallback_used": true,
           "nice_classes": [
             29
           ],
@@ -736,7 +728,7 @@
           ],
           "similarity_match_reason": "normalized_semantic_match",
           "similarity_match_confidence": "medium",
-          "similarity_fallback_used": false,
+          "similarity_fallback_used": true,
           "nice_classes": [
             29
           ],
@@ -783,15 +775,11 @@
             "파스타",
             "국수"
           ],
-          "similarity_codes": [
-            "G020101"
-          ],
-          "candidate_similarity_codes": [
-            "G020101"
-          ],
-          "similarity_match_reason": "normalized_semantic_match",
-          "similarity_match_confidence": "high",
-          "similarity_fallback_used": false,
+          "similarity_codes": [],
+          "candidate_similarity_codes": [],
+          "similarity_match_reason": "same_class_fallback",
+          "similarity_match_confidence": "fallback",
+          "similarity_fallback_used": true,
           "nice_classes": [
             30
           ],
@@ -839,15 +827,11 @@
             "곡물",
             "조제품"
           ],
-          "similarity_codes": [
-            "G020101"
-          ],
-          "candidate_similarity_codes": [
-            "G020101"
-          ],
-          "similarity_match_reason": "normalized_semantic_match",
-          "similarity_match_confidence": "high",
-          "similarity_fallback_used": false,
+          "similarity_codes": [],
+          "candidate_similarity_codes": [],
+          "similarity_match_reason": "same_class_fallback",
+          "similarity_match_confidence": "fallback",
+          "similarity_fallback_used": true,
           "nice_classes": [
             30
           ],
@@ -2328,15 +2312,11 @@
             "바닥깔개용",
             "재료"
           ],
-          "similarity_codes": [
-            "G2602"
-          ],
-          "candidate_similarity_codes": [
-            "G2602"
-          ],
-          "similarity_match_reason": "normalized_semantic_match",
-          "similarity_match_confidence": "high",
-          "similarity_fallback_used": false,
+          "similarity_codes": [],
+          "candidate_similarity_codes": [],
+          "similarity_match_reason": "same_class_fallback",
+          "similarity_match_confidence": "fallback",
+          "similarity_fallback_used": true,
           "nice_classes": [
             27
           ],
@@ -2622,7 +2602,7 @@
           ],
           "similarity_match_reason": "normalized_semantic_match",
           "similarity_match_confidence": "medium",
-          "similarity_fallback_used": false,
+          "similarity_fallback_used": true,
           "nice_classes": [
             5
           ],
@@ -2960,15 +2940,11 @@
             "솔은",
             "제외"
           ],
-          "similarity_codes": [
-            "G1302"
-          ],
-          "candidate_similarity_codes": [
-            "G1302"
-          ],
-          "similarity_match_reason": "normalized_semantic_match",
-          "similarity_match_confidence": "high",
-          "similarity_fallback_used": false,
+          "similarity_codes": [],
+          "candidate_similarity_codes": [],
+          "similarity_match_reason": "same_class_fallback",
+          "similarity_match_confidence": "fallback",
+          "similarity_fallback_used": true,
           "nice_classes": [
             21
           ],
@@ -3193,10 +3169,14 @@
             "장치",
             "기구"
           ],
-          "similarity_codes": [],
-          "candidate_similarity_codes": [],
-          "similarity_match_reason": "same_class_fallback",
-          "similarity_match_confidence": "fallback",
+          "similarity_codes": [
+            "G390701"
+          ],
+          "candidate_similarity_codes": [
+            "G390701"
+          ],
+          "similarity_match_reason": "normalized_semantic_match",
+          "similarity_match_confidence": "medium",
           "similarity_fallback_used": true,
           "nice_classes": [
             9
@@ -3305,7 +3285,7 @@
           ],
           "similarity_match_reason": "normalized_semantic_match",
           "similarity_match_confidence": "medium",
-          "similarity_fallback_used": false,
+          "similarity_fallback_used": true,
           "nice_classes": [
             9
           ],
@@ -3518,10 +3498,9 @@
             "종이 및 판지; 인쇄물; 제본재료; 사진; 문방구 및 사무용품(가구는 제외); 문방구용 또는 가정용 접착제; 제도용구 및 미술용 재료; 회화용 솔; 교재; 포장용 플라스틱제 시트, 필름 및 가방; 인쇄활자, 프린팅블록"
           ],
           "similarity_codes": [
-            "G210101"
+            "G2202"
           ],
           "candidate_similarity_codes": [
-            "G210101",
             "G2202"
           ],
           "similarity_match_reason": "normalized_semantic_match",
@@ -3904,7 +3883,7 @@
           ],
           "similarity_match_reason": "normalized_semantic_match",
           "similarity_match_confidence": "medium",
-          "similarity_fallback_used": false,
+          "similarity_fallback_used": true,
           "nice_classes": [
             31
           ],
@@ -5692,10 +5671,10 @@
           "candidate_similarity_codes": [
             "S4101",
             "S120903",
-            "S120999",
             "S120904",
             "S120905",
             "S120907",
+            "S120999",
             "S121001"
           ],
           "similarity_match_reason": "keyword_dictionary_match",
@@ -5791,8 +5770,7 @@
             "S040101"
           ],
           "candidate_similarity_codes": [
-            "S040101",
-            "S050138"
+            "S040101"
           ],
           "similarity_match_reason": "normalized_semantic_match",
           "similarity_match_confidence": "high",
@@ -5890,15 +5868,11 @@
             "광고업",
             "광고업; 사업관리/조직 및 경영업; 사무처리업"
           ],
-          "similarity_codes": [
-            "S0101"
-          ],
-          "candidate_similarity_codes": [
-            "S0101"
-          ],
-          "similarity_match_reason": "normalized_semantic_match",
-          "similarity_match_confidence": "high",
-          "similarity_fallback_used": false,
+          "similarity_codes": [],
+          "candidate_similarity_codes": [],
+          "similarity_match_reason": "same_class_fallback",
+          "similarity_match_confidence": "fallback",
+          "similarity_fallback_used": true,
           "nice_classes": [
             35
           ],
@@ -6190,7 +6164,6 @@
           ],
           "candidate_similarity_codes": [
             "S0301",
-            "S120401",
             "S173699"
           ],
           "similarity_match_reason": "exact_label_match",
@@ -6219,7 +6192,6 @@
           ],
           "candidate_similarity_codes": [
             "S1212",
-            "S120401",
             "S121201",
             "S121202",
             "S121203",
@@ -6247,14 +6219,14 @@
             "법무서비스업; 유형의 재산 및 개인을 물리적으로 보호하기 위한 보안서비스업; 이성(異性) 소개업, 온라인 소셜 네트워킹 서비스업; 장례업; 베이비시팅업"
           ],
           "similarity_codes": [
-            "S174599"
+            "S120402"
           ],
           "candidate_similarity_codes": [
-            "S174599"
+            "S120402"
           ],
-          "similarity_match_reason": "same_class_fallback",
-          "similarity_match_confidence": "fallback",
-          "similarity_fallback_used": true,
+          "similarity_match_reason": "exact_label_match",
+          "similarity_match_confidence": "exact",
+          "similarity_fallback_used": false,
           "nice_classes": [
             45
           ],

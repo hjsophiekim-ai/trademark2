@@ -19,11 +19,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 from xml.etree import ElementTree as ET
+try:
+    from .resource_paths import data_dir as _data_dir
+except ImportError:
+    from resource_paths import data_dir as _data_dir
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DOCS_DIR = ROOT_DIR / "docs"
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = _data_dir()
 SIMILARITY_CODE_SOURCE_PATH = DOCS_DIR / "상품유사군코드.xlsx"
 ALIAS_TABLE_PATH = DATA_DIR / "similarity_code_aliases.json"
 LEARNED_MATCHES_PATH = DATA_DIR / "learned_similarity_matches.json"

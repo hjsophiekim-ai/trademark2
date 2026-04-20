@@ -7,6 +7,10 @@ import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
+try:
+    from .resource_paths import data_dir as _data_dir
+except ImportError:
+    from resource_paths import data_dir as _data_dir
 
 try:
     from .legal_scope import SCOPE_GROUP_LABELS, cross_kind_exception, infer_kind_from_classes
@@ -18,7 +22,7 @@ except ImportError:
     from similarity_code_db import get_code_metadata
 
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = _data_dir()
 RETAIL_RULES_PATH = DATA_DIR / "retail_goods_relation_rules.json"
 RETAIL_CODE_PREFIX = "S20"
 BLOCKED_NEAR_RELATION_PAIRS = {

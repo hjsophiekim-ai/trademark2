@@ -7,6 +7,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Iterable
 from xml.etree import ElementTree as ET
+try:
+    from .resource_paths import data_dir as _data_dir
+except ImportError:
+    from resource_paths import data_dir as _data_dir
 
 try:
     from .similarity_code_db import (
@@ -24,7 +28,7 @@ except ImportError:
     )
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = _data_dir()
 DOCS_DIR = ROOT_DIR / "docs"
 EXCEL_SOURCE_PATH = DOCS_DIR / "지식재산처_상품분류_니스분류.xlsx"
 CLASS_CATALOG_PATH = DATA_DIR / "nice_class_catalog.json"

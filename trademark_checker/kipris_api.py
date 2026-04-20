@@ -30,11 +30,15 @@ try:
     load_dotenv()
 except ImportError:
     pass
+try:
+    from .resource_paths import data_dir as _data_dir
+except ImportError:
+    from resource_paths import data_dir as _data_dir
 
 
 BASE_URL = "https://www.kipris.or.kr/kportal/resulta.do"
 USE_MOCK = os.getenv("KIPRIS_USE_MOCK", "false").lower() == "true"
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = _data_dir()
 PRIOR_DETAIL_FIXTURE_PATH = DATA_DIR / "prior_mark_detail_fixtures.json"
 
 # Search Status Constants

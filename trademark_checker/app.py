@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+try:
+    from resource_paths import docs_dir as _docs_dir
+except ImportError:
+    from .resource_paths import docs_dir as _docs_dir
 
 from improvement import get_improvements
 from kipris_api import build_kipris_search_plan, dedupe_search_candidates, search_all_pages
@@ -33,7 +37,7 @@ from similarity_code_db import get_all_codes_by_class, get_similarity_codes
 
 
 MAX_SELECTED_SUBGROUPS = 5
-AURI_IMAGE_PATH = Path(__file__).resolve().parent.parent / "docs" / "아우리.jpg"
+AURI_IMAGE_PATH = _docs_dir() / "아우리.jpg"
 
 
 @st.cache_data(show_spinner=False)

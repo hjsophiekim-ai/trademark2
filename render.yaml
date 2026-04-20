@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: trademark2
+    env: python
+    plan: free
+    buildCommand: pip install -r trademark_checker/requirements.txt
+    startCommand: streamlit run trademark_checker/app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true
+    autoDeploy: true

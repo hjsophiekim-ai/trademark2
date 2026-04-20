@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import sys
+from pathlib import Path
+from urllib.request import urlopen
 
 from fpdf import FPDF
 
@@ -14,20 +17,76 @@ class KoreanPDF(FPDF):
     def __init__(self) -> None:
         super().__init__()
         self.font_family_name = "Helvetica"
+        self._load_unicode_font()
+
+    def kfont(self, size: int = 11, bold: bool = False) -> None:
+        style = "B" if bold else ""
+        self.set_font(self.font_family_name, style, size)
+
+    def _bundled_root(self) -> Path:
+        root = getattr(sys, "_MEIPASS", "")
+        if root:
+            return Path(root)
+        return Path(__file__).resolve().parent
+
+    def _fonts_dir(self) -> Path:
+        root = getattr(sys, "_MEIPASS", "")
+        if root:
+            return Path(root) / "trademark_checker" / "fonts"
+        return Path(__file__).resolve().parent / "fonts"
+
+    def _download_font(self, url: str, dest: Path) -> bool:
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with urlopen(url, timeout=20) as resp:
+                payload = resp.read()
+            if not payload:
+                return False
+            dest.write_bytes(payload)
+            return True
+        except Exception:
+            return False
+
+    def _load_unicode_font(self) -> None:
+        fonts_dir = self._fonts_dir()
+        regular_path = fonts_dir / "NanumGothic-Regular.ttf"
+        bold_path = fonts_dir / "NanumGothic-Bold.ttf"
+
+        if not regular_path.exists():
+            self._download_font(
+                "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf",
+                regular_path,
+            )
+        if not bold_path.exists():
+            self._download_font(
+                "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf",
+                bold_path,
+            )
+
+        try:
+            if regular_path.exists():
+                self.add_font("NanumGothic", "", str(regular_path), uni=True)
+                self.font_family_name = "NanumGothic"
+                if bold_path.exists():
+                    self.add_font("NanumGothic", "B", str(bold_path), uni=True)
+                else:
+                    self.add_font("NanumGothic", "B", str(regular_path), uni=True)
+                return
+        except Exception:
+            self.font_family_name = "Helvetica"
+
         regular_font = "C:/Windows/Fonts/malgun.ttf"
         bold_font = "C:/Windows/Fonts/malgunbd.ttf"
         try:
             if os.path.exists(regular_font):
-                self.add_font("Malgun", "", regular_font)
+                self.add_font("Malgun", "", regular_font, uni=True)
                 self.font_family_name = "Malgun"
-            if os.path.exists(bold_font):
-                self.add_font("Malgun", "B", bold_font)
+                if os.path.exists(bold_font):
+                    self.add_font("Malgun", "B", bold_font, uni=True)
+                else:
+                    self.add_font("Malgun", "B", regular_font, uni=True)
         except Exception:
             self.font_family_name = "Helvetica"
-
-    def kfont(self, size: int = 11, bold: bool = False) -> None:
-        style = "B" if bold and self.font_family_name == "Malgun" else ""
-        self.set_font(self.font_family_name, style, size)
 
 
 def _safe_text(value: object) -> str:
@@ -144,7 +203,7 @@ def _render_relative_section(pdf: KoreanPDF, width: float, payload: dict) -> Non
 
 def _render_search_debug_section(pdf: KoreanPDF, width: float, payload: dict) -> None:
     if payload.get("search_failed"):
-        _write_lines(pdf, width, [f"⚠️ SEARCH FAILED: {payload.get('search_error_msg', 'Unknown Error')}"])
+        _write_lines(pdf, width, [f"[WARN] SEARCH FAILED: {payload.get('search_error_msg', 'Unknown Error')}"])
         _write_lines(pdf, width, ["Note: Results may be incomplete or misleading due to engine failure."])
         pdf.ln(1)
 
@@ -207,7 +266,7 @@ def _render_single_report(pdf: KoreanPDF, width: float, payload: dict, title: st
     if is_stage1_main:
         pdf.kfont(11, bold=True)
         pdf.set_text_color(200, 0, 0)
-        _write_lines(pdf, width, [f"⚠️ 주요 거절 사유: 단어 자체의 식별력 부족 (Stage 1)"])
+        _write_lines(pdf, width, ["[WARN] 주요 거절 사유: 단어 자체의 식별력 부족 (Stage 1)"])
         pdf.set_text_color(0, 0, 0)
         pdf.kfont(10)
         _write_lines(pdf, width, [f"선행상표와 상관없이, 상표법 제33조에 의거하여 단어 자체가 공익상 특정인에게 독점시킬 수 없는 성질을 가지고 있습니다. (상한선: {stage1_cap}%)"])
@@ -215,7 +274,7 @@ def _render_single_report(pdf: KoreanPDF, width: float, payload: dict, title: st
     elif is_stage2_main:
         pdf.kfont(11, bold=True)
         pdf.set_text_color(200, 0, 0)
-        _write_lines(pdf, width, [f"⚠️ 주요 거절 사유: 선행상표와의 충돌 위험 (Stage 2)"])
+        _write_lines(pdf, width, ["[WARN] 주요 거절 사유: 선행상표와의 충돌 위험 (Stage 2)"])
         pdf.set_text_color(0, 0, 0)
         pdf.kfont(10)
         _write_lines(pdf, width, [f"유사한 선행상표가 이미 등록되어 있어 혼동의 우려가 있습니다. (상대적 점수: {stage2_score}%)"])

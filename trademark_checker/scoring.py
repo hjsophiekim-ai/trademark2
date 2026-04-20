@@ -274,10 +274,58 @@ def similarity_percent(source: str, target: str) -> int:
 
 
 def _phonetic_similar(a: str, b: str) -> bool:
-    """기존 backup/app.py의 단순 발음 유사 규칙을 유지한다."""
     if len(a) < 3 or len(b) < 3:
         return False
-    return a[:3] == b[:3] and abs(len(a) - len(b)) <= 2
+    if a[:3] == b[:3] and abs(len(a) - len(b)) <= 2:
+        return True
+    left_key = _roman_phonetic_key(a)
+    right_key = _roman_phonetic_key(b)
+    if left_key and right_key and left_key == right_key:
+        return True
+    if left_key and right_key and left_key[:3] == right_key[:3]:
+        return True
+    return False
+
+
+def _roman_phonetic_key(text: str) -> str:
+    raw = re.sub(r"[^0-9A-Za-z]+", "", str(text or "")).upper()
+    if not raw or not re.fullmatch(r"[0-9A-Z]+", raw):
+        return ""
+
+    raw = raw.replace("PH", "F")
+    raw = raw.replace("CK", "K")
+    raw = raw.replace("QU", "K")
+    raw = raw.replace("X", "KS")
+
+    group_map = {
+        "B": "P",
+        "F": "P",
+        "V": "P",
+        "P": "P",
+        "C": "K",
+        "Q": "K",
+        "G": "K",
+        "K": "K",
+        "D": "T",
+        "T": "T",
+        "Z": "S",
+        "S": "S",
+    }
+
+    out = []
+    last = ""
+    for ch in raw:
+        if ch in "AEIOUY":
+            mapped = "A"
+        else:
+            mapped = group_map.get(ch, ch)
+        if mapped == last:
+            continue
+        out.append(mapped)
+        last = mapped
+    key = "".join(out)
+    key = re.sub(r"A+", "A", key)
+    return key[:12]
 
 
 def _phonetic_similarity_percent(source: str, target: str) -> int:
@@ -288,6 +336,17 @@ def _phonetic_similarity_percent(source: str, target: str) -> int:
     base = similarity_percent(source, target)
     if left == right:
         return 100
+    left_key = _roman_phonetic_key(left)
+    right_key = _roman_phonetic_key(right)
+    if left_key and right_key:
+        key_ratio = SequenceMatcher(None, left_key, right_key).ratio()
+        key_score = int(round(key_ratio * 100))
+        base = max(base, key_score)
+        if left_key == right_key:
+            return max(base, 92)
+        if left_key[:3] == right_key[:3]:
+            return max(base, 86)
+
     if _phonetic_similar(left, right):
         return max(base, 84)
     if left[:2] == right[:2]:
@@ -316,9 +375,9 @@ def _mark_similarity(appearance: int, phonetic: int, conceptual: int, trademark_
     if trademark_type == "로고만":
         score = appearance * 0.6 + phonetic * 0.2 + conceptual * 0.2
     elif trademark_type == "문자+로고":
-        score = appearance * 0.4 + phonetic * 0.4 + conceptual * 0.2
+        score = appearance * 0.35 + phonetic * 0.45 + conceptual * 0.2
     else:
-        score = appearance * 0.25 + phonetic * 0.5 + conceptual * 0.25
+        score = appearance * 0.2 + phonetic * 0.65 + conceptual * 0.15
     return int(round(score))
 
 
@@ -390,7 +449,11 @@ def _status_profile(status: str) -> dict:
 
 
 def _mark_identity(source: str, target: str) -> str:
-    return "exact" if _compact(source) == _compact(target) else "similar"
+    left = _normalize(source)
+    right = _normalize(target)
+    if left and right and left == right:
+        return "exact"
+    return "similar"
 
 
 def _extract_basis_from_text(text: str) -> list[str]:
@@ -720,6 +783,13 @@ def _confusion_metrics(item: dict) -> dict:
             if item.get("mark_similarity", 0) >= 70:
                 confusion_score = max(confusion_score, 90)
 
+    overlap_type = _canonical_overlap_type(item.get("overlap_type", item.get("product_bucket", "excluded")))
+    phonetic = int(item.get("phonetic_similarity", 0) or 0)
+    if overlap_type == "same_class_only" and item.get("counts_toward_final_score") and phonetic >= 92:
+        confusion_score = max(confusion_score, 80)
+        if phonetic >= 98:
+            confusion_score = max(confusion_score, 88)
+
     if confusion_score >= 90:
         label = "매우 높음"
     elif confusion_score >= 75:
@@ -923,6 +993,7 @@ def _calibrate_score(
     strongest_type = _canonical_overlap_type(strongest.get("overlap_type")) if strongest else "no_material_overlap"
     strongest_basis = strongest.get("overlap_basis", "") if strongest else ""
     mark_similarity = int(strongest.get("mark_similarity", 0)) if strongest else 0
+    phonetic_similarity = int(strongest.get("phonetic_similarity", 0)) if strongest else 0
     confusion_score = int(strongest.get("confusion_score", 0)) if strongest else 0
     primary_match_count = int(strongest.get("primary_code_overlap_count", 0)) if strongest else 0
 
@@ -987,7 +1058,13 @@ def _calibrate_score(
     elif strongest_type == "same_class_only":
         lower, upper = 60, 75
         # 심각한 오류 해결: confusion_score가 높으면 same_class_only라도 캡을 강제로 낮춤
-        if confusion_score >= 50:
+        if phonetic_similarity >= 92 and confusion_score >= 80:
+            lower, upper = 8, 22
+            explanations.append(
+                f"동일 류에서 발음 유사도가 매우 높고(발음 {phonetic_similarity}%, 혼동위험 {confusion_score}%), "
+                "상대적 거절사유 관점에서 등록 가능성을 8~22 구간으로 강하게 제한했습니다."
+            )
+        elif confusion_score >= 50:
             lower, upper = 30, 50
             explanations.append(
                 f"표장 혼동위험({confusion_score}%)이 매우 높아 동일 니스류 내의 다른 유사군이라도 등록 가능성을 30~50 구간으로 대폭 제한했습니다."

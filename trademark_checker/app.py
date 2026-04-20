@@ -1,11 +1,14 @@
+import base64
 import re
 import time
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 from improvement import get_improvements
 from kipris_api import build_kipris_search_plan, dedupe_search_candidates, search_all_pages
+from search_health import classify_query, summarize_health
 from nice_catalog import (
     build_selection_summary,
     build_scope_session_state,
@@ -24,12 +27,46 @@ from nice_catalog import (
 )
 from goods_scope import normalize_selected_input
 from report_generator import generate_report_pdf
-from scoring import evaluate_registration, similarity_percent, strip_html
+from scoring import evaluate_registration, get_score_band, similarity_percent, strip_html
 from search_mapper import get_category_suggestions
 from similarity_code_db import get_all_codes_by_class, get_similarity_codes
 
 
 MAX_SELECTED_SUBGROUPS = 5
+AURI_IMAGE_PATH = Path(__file__).resolve().parent.parent / "docs" / "아우리.jpg"
+
+
+@st.cache_data(show_spinner=False)
+def _load_image_b64(path: str) -> tuple[str, str] | None:
+    file_path = Path(path)
+    if not file_path.exists():
+        return None
+    suffix = file_path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        mime = "image/jpeg"
+    elif suffix == ".png":
+        mime = "image/png"
+    else:
+        return None
+    encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
+    return mime, encoded
+
+
+def render_auri(size_px: int = 220) -> None:
+    payload = _load_image_b64(str(AURI_IMAGE_PATH))
+    if not payload:
+        return
+    mime, encoded = payload
+    st.markdown(
+        f"""
+        <div style="width:100%; display:flex; justify-content:center; margin:12px 0 18px 0;">
+            <div style="background:#FFFFFF; border-radius:18px; padding:12px 16px; box-shadow:0 2px 10px rgba(33,150,243,0.12);">
+                <img src="data:{mime};base64,{encoded}" style="width:{int(size_px)}px; height:auto; display:block;" />
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def reset_session() -> None:
@@ -1391,6 +1428,7 @@ st.markdown("---")
 if st.session_state.step == 1:
     st.markdown("## 안녕하세요!")
     st.markdown("### 등록하고 싶은 상표명을 알려주세요")
+    render_auri(260)
 
     col1, col2 = st.columns([2, 1])
     with col1:
@@ -2078,9 +2116,20 @@ elif st.session_state.step == 4:
             field_scope = derive_field_scope(field)
             derived_codes = field_scope.get("derived_similarity_codes", [])
             derived_classes = field_scope.get("derived_nice_classes", field.get("nice_classes", [field["class_no"]]))
+            selected_kind = field.get("kind", st.session_state.get("selected_kind"))
+            effective_classes = list(derived_classes or [])
+            if selected_kind == "services":
+                normalized = []
+                for value in effective_classes:
+                    try:
+                        normalized.append(int(str(value).strip()))
+                    except ValueError:
+                        continue
+                if 35 not in normalized:
+                    effective_classes.append(35)
             overlap_context = normalize_selected_input(
-                selected_kind=field.get("kind", st.session_state.get("selected_kind")),
-                selected_classes=derived_classes,
+                selected_kind=selected_kind,
+                selected_classes=effective_classes,
                 selected_codes=derived_codes,
                 selected_fields=[field],
                 specific_product_text=config.get("specific_product", ""),
@@ -2094,7 +2143,7 @@ elif st.session_state.step == 4:
 
             search_plan = build_kipris_search_plan(
                 st.session_state.trademark_name,
-                derived_classes,
+                effective_classes,
                 primary_codes,
                 related_codes=related_codes,
                 retail_codes=retail_codes,
@@ -2102,14 +2151,18 @@ elif st.session_state.step == 4:
             executed_queries = []
             
             # 검색 실패 여부 트래킹
-            any_search_failed = False
+            total_queries = 0
+            success_queries = 0
+            hard_fail_queries = 0
+            soft_fail_queries = 0
             last_error_msg = ""
 
             for step in search_plan:
+                query_word = step.get("word") or st.session_state.trademark_name
                 codes = step.get("codes") or [""]
                 for code in codes:
                     result = search_all_pages(
-                        st.session_state.trademark_name,
+                        query_word,
                         similar_goods_code=code,
                         class_no=step.get("class_no"),
                         max_pages=step.get("max_pages", 3),
@@ -2118,20 +2171,25 @@ elif st.session_state.step == 4:
                     
                     search_status = result.get("search_status", "unknown")
                     is_success = result.get("success", False)
+                    total_queries += 1
+                    bucket = classify_query(is_success, search_status)
+                    if bucket == "success":
+                        success_queries += 1
+                    elif bucket == "soft_success":
+                        success_queries += 1
+                        soft_fail_queries += 1
+                        last_error_msg = result.get("result_msg", last_error_msg) or last_error_msg
+                    else:
+                        hard_fail_queries += 1
+                        last_error_msg = result.get("result_msg", last_error_msg) or last_error_msg
                     
-                    if not is_success or search_status in [
-                        "transport_error",
-                        "parse_error",
-                        "detail_parse_error",
-                        "blocked_or_unexpected_page",
-                    ]:
-                        any_search_failed = True
-                        last_error_msg = result.get("result_msg", "Unknown error")
+                    any_search_failed = (hard_fail_queries + soft_fail_queries) > 0
 
                     executed_queries.append(
                         {
                             "query_mode": step.get("query_mode", ""),
                             "search_mode": step.get("search_mode", result.get("search_mode", "mixed")),
+                            "word": query_word,
                             "class_no": step.get("class_no", ""),
                             "code": code,
                             "search_formula": step.get("search_formula", ""),
@@ -2158,24 +2216,45 @@ elif st.session_state.step == 4:
                 trademark_name=st.session_state.trademark_name,
                 trademark_type=st.session_state.trademark_type,
                 is_coined=st.session_state.is_coined,
-                selected_classes=derived_classes,
+                selected_classes=effective_classes,
                 selected_codes=derived_codes,
                 prior_items=all_results,
                 selected_fields=[field],
                 specific_product=config.get("specific_product", ""),
             )
             
-            # 검색 실패 시 분석 결과 보정
-            if any_search_failed:
+            search_health = summarize_health(
+                total_queries=total_queries,
+                success_queries=success_queries,
+                hard_fail_queries=hard_fail_queries,
+                soft_fail_queries=soft_fail_queries,
+                last_error_msg=last_error_msg,
+            )
+
+            if search_health.should_cap_score:
                 field_analysis["search_failed"] = True
-                field_analysis["search_error_msg"] = last_error_msg
-                # 검색 실패 시 등록 가능성을 과도하게 높게 잡지 않도록 보정 (예: 90% -> 50%)
+                field_analysis["search_partial_failure"] = False
+                field_analysis["search_error_msg"] = search_health.last_error_msg
+                field_analysis["score_explanation"]["notes"].append(
+                    "⚠️ KIPRIS 검색이 정상 완료되지 않아 결과를 확신할 수 없습니다. "
+                    f"(성공 쿼리 0/{search_health.total_queries})"
+                )
                 if field_analysis.get("score", 0) > 50:
                     field_analysis["score"] = 50
-                    field_analysis["band"] = get_result_style(50)[2] # 등록 가능성 높음 -> 주의 필요
-                    field_analysis["score_explanation"]["notes"].append(
-                        f"⚠️ KIPRIS 검색 중 오류({last_error_msg})가 발생하여 결과를 확신할 수 없습니다. 점수를 하향 조정했습니다."
-                    )
+                    field_analysis["band"] = get_score_band(50)
+            elif search_health.any_fail:
+                field_analysis["search_failed"] = False
+                field_analysis["search_partial_failure"] = True
+                field_analysis["search_error_msg"] = search_health.last_error_msg
+                field_analysis["score_explanation"]["notes"].append(
+                    "⚠️ KIPRIS 검색이 일부 실패/제한되어 결과 신뢰도가 낮을 수 있습니다. "
+                    f"(성공 {search_health.success_queries}/{search_health.total_queries}, "
+                    f"하드실패 {search_health.hard_fail_queries}, 소프트실패 {search_health.soft_fail_queries})"
+                )
+            else:
+                field_analysis["search_failed"] = False
+                field_analysis["search_partial_failure"] = False
+                field_analysis["search_error_msg"] = ""
 
             field_reports.append(
                 {
@@ -2197,8 +2276,15 @@ elif st.session_state.step == 4:
                     "merged_candidates": merged_count,
                     "deduped_candidates": deduped_count,
                     "search_source": "실제 KIPRIS 데이터" if used_real_search else "Mock 데이터 또는 제한 조회",
-                    "search_failed": any_search_failed,
-                    "search_error_msg": last_error_msg,
+                    "search_health": {
+                        "total_queries": search_health.total_queries,
+                        "success_queries": search_health.success_queries,
+                        "hard_fail_queries": search_health.hard_fail_queries,
+                        "soft_fail_queries": search_health.soft_fail_queries,
+                    },
+                    "search_failed": field_analysis.get("search_failed", False),
+                    "search_partial_failure": field_analysis.get("search_partial_failure", False),
+                    "search_error_msg": field_analysis.get("search_error_msg", ""),
                     "improvements": get_improvements(
                         st.session_state.trademark_name,
                         derived_codes,
@@ -2223,6 +2309,7 @@ elif st.session_state.step == 4:
     st.markdown(f"## **'{st.session_state.trademark_name}'** 등록 가능성 검토 결과")
     st.markdown("### 선택한 상품군별로 따로 판단한 결과입니다.")
     st.caption("유사군코드는 상품유사군코드.xlsx를 기준으로 자동 도출한 실제 예규 코드만 표시합니다.")
+    render_auri(220)
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -2273,6 +2360,10 @@ elif st.session_state.step == 4:
             """,
             unsafe_allow_html=True,
         )
+        if report.get("search_failed"):
+            st.warning("KIPRIS 검색이 실패하여 결과가 불확실합니다. (안전장치로 점수가 보수적으로 표시될 수 있습니다.)")
+        elif report.get("search_partial_failure"):
+            st.warning("KIPRIS 검색이 일부 실패/제한되어 결과 신뢰도가 낮을 수 있습니다. 검색 파이프라인 디버그를 확인하세요.")
 
         sub1, sub2, sub3, sub4, sub5 = st.columns(5)
         with sub1:
@@ -2595,7 +2686,7 @@ elif st.session_state.step == 4:
             st.rerun()
     with col2:
         st.download_button(
-            "PDF 보고서 받기",
+            "PDF로 출력하기",
             data=generate_report_pdf(build_report_payload()),
             file_name=f"{st.session_state.trademark_name}_검토보고서.pdf",
             mime="application/pdf",

@@ -53,6 +53,8 @@ QUERY_MODE_LABELS = {
     "retail_sc_only": "TN + retail SC",
     "same_class_fallback": "TN + class fallback",
     "text_fallback": "TN broad fallback",
+    "phonetic_text_fallback": "TN phonetic fallback",
+    "phonetic_class_fallback": "TN + class phonetic fallback",
 }
 
 _SESSION: requests.Session | None = None
@@ -524,6 +526,7 @@ def build_kipris_search_plan(
     if not classes:
         classes = [""]
 
+    query_terms = _derive_query_terms(trademark_name)
     plan: list[dict] = []
 
     # Query A: TN + class (class 기반 recall)
@@ -532,6 +535,7 @@ def build_kipris_search_plan(
             {
                 "query_mode": "class_only",
                 "search_mode": "class",
+                "word": trademark_name,
                 "class_no": class_no,
                 "codes": [],
                 "label": QUERY_MODE_LABELS["class_only"],
@@ -546,6 +550,7 @@ def build_kipris_search_plan(
             {
                 "query_mode": "primary_sc_only",
                 "search_mode": "sc",
+                "word": trademark_name,
                 "class_no": "",
                 "codes": [code],
                 "label": QUERY_MODE_LABELS["primary_sc_only"],
@@ -561,6 +566,7 @@ def build_kipris_search_plan(
                 {
                     "query_mode": "primary_sc",
                     "search_mode": "mixed",
+                    "word": trademark_name,
                     "class_no": class_no,
                     "codes": [code],
                     "label": QUERY_MODE_LABELS["primary_sc"],
@@ -575,6 +581,7 @@ def build_kipris_search_plan(
             {
                 "query_mode": "related_sc_only",
                 "search_mode": "sc",
+                "word": trademark_name,
                 "class_no": "",
                 "codes": [code],
                 "label": QUERY_MODE_LABELS["related_sc_only"],
@@ -589,6 +596,7 @@ def build_kipris_search_plan(
             {
                 "query_mode": "retail_sc_only",
                 "search_mode": "sc",
+                "word": trademark_name,
                 "class_no": "",
                 "codes": [code],
                 "label": QUERY_MODE_LABELS["retail_sc_only"],
@@ -602,6 +610,7 @@ def build_kipris_search_plan(
         {
             "query_mode": "text_fallback",
             "search_mode": "mixed",
+            "word": trademark_name,
             "class_no": "",
             "codes": [],
             "label": QUERY_MODE_LABELS["text_fallback"],
@@ -610,7 +619,102 @@ def build_kipris_search_plan(
         }
     )
 
+    for term in query_terms:
+        if term.upper() == str(trademark_name or "").strip().upper():
+            continue
+        plan.append(
+            {
+                "query_mode": "phonetic_text_fallback",
+                "search_mode": "mixed",
+                "word": term,
+                "class_no": "",
+                "codes": [],
+                "label": QUERY_MODE_LABELS["phonetic_text_fallback"],
+                "search_formula": f"({term})",
+                "max_pages": 2,
+            }
+        )
+        for class_no in classes:
+            if not class_no:
+                continue
+            plan.append(
+                {
+                    "query_mode": "phonetic_class_fallback",
+                    "search_mode": "class",
+                    "word": term,
+                    "class_no": class_no,
+                    "codes": [],
+                    "label": QUERY_MODE_LABELS["phonetic_class_fallback"],
+                    "search_formula": f"({term}) * ({class_no})",
+                    "max_pages": 2,
+                }
+            )
+
     return plan
+
+
+def _derive_query_terms(trademark_name: str) -> list[str]:
+    raw = str(trademark_name or "").strip()
+    if not raw:
+        return [""]
+    compact = re.sub(r"[^0-9A-Za-z]+", "", raw).upper()
+    if not compact:
+        return [raw]
+    if not re.fullmatch(r"[0-9A-Z]+", compact):
+        return [raw]
+    if len(compact) < 4:
+        return [raw]
+
+    base_terms = [compact, raw]
+    prefix = compact[:4]
+    base_terms.append(prefix)
+
+    first = compact[0]
+    first_groups = [
+        ("P", ("P", "B", "F", "V")),
+        ("B", ("P", "B", "F", "V")),
+        ("F", ("P", "B", "F", "V")),
+        ("V", ("P", "B", "F", "V")),
+        ("K", ("K", "G", "C", "Q")),
+        ("G", ("K", "G", "C", "Q")),
+        ("C", ("K", "G", "C", "Q")),
+        ("Q", ("K", "G", "C", "Q")),
+        ("T", ("T", "D")),
+        ("D", ("T", "D")),
+        ("S", ("S", "Z")),
+        ("Z", ("S", "Z")),
+    ]
+    replacements = dict(first_groups).get(first, ())
+    for rep in replacements:
+        if rep == first:
+            continue
+        base_terms.append(rep + compact[1:])
+
+    vowel_term = compact
+    vowel_term = re.sub(r"OO", "U", vowel_term)
+    vowel_term = re.sub(r"OU", "U", vowel_term)
+    vowel_term = re.sub(r"EE", "I", vowel_term)
+    vowel_term = re.sub(r"IE", "I", vowel_term)
+    vowel_term = re.sub(r"Y$", "I", vowel_term)
+    vowel_term = re.sub(r"E$", "", vowel_term)
+    if vowel_term and vowel_term != compact:
+        base_terms.append(vowel_term)
+        base_terms.append(vowel_term[:4])
+
+    deduped = []
+    seen = set()
+    for term in base_terms:
+        t = str(term or "").strip()
+        if not t:
+            continue
+        key = t.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(t)
+        if len(deduped) >= 6:
+            break
+    return deduped
 
 
 def _get_session() -> requests.Session:

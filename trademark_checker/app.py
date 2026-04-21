@@ -1441,13 +1441,14 @@ if st.session_state.step == 1:
 
     col1, col2 = st.columns([2, 1])
     with col1:
-        name = st.text_area(
+        st.text_area(
             "상표명 입력",
             placeholder="예) POOKIE, 사랑해, BRAND ONE, 달빛커피...",
-            value=st.session_state.trademark_name,
             height=90,
             label_visibility="collapsed",
+            key="trademark_name",
         )
+        name = st.session_state.trademark_name
 
     st.markdown("#### 상표 유형을 선택해주세요")
     col1, col2, col3 = st.columns(3)
@@ -1464,12 +1465,14 @@ if st.session_state.step == 1:
     st.markdown(f"선택됨: **{st.session_state.trademark_type}**")
 
     if st.button("다음 단계로 → 상품 선택", use_container_width=True, type="primary"):
-        if name.strip():
-            st.session_state.trademark_name = name.strip()
+        cleaned = name.strip()
+        if cleaned:
+            st.session_state.trademark_name = cleaned
             st.session_state.is_coined = False
             st.session_state.step = 2
             st.rerun()
-        st.error("상표명을 입력해주세요!")
+        else:
+            st.error("상표명을 입력해주세요!")
 
 elif st.session_state.step == 2:
     render_scope_step()

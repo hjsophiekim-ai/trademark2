@@ -985,36 +985,6 @@ def render_scope_step() -> None:
                 st.session_state.step2_substep = "subgroup"
                 st.rerun()
 
-    with st.expander("개발 디버그", expanded=False):
-        st.code(
-            "\n".join(
-                [
-                    f"selected_kind={selected_kind}",
-                    f"selected_group_id={selected_group_id}",
-                    f"selected_group_label={selected_group_label}",
-                    f"step_scope_sub={step_scope_sub}",
-                    f"selected_subgroup_count={len(scope_state['selected_subgroup_ids'])}",
-                    f"selected_subgroups={scope_state['selected_subgroup_labels']}",
-                    f"candidate_similarity_codes={scope_state.get('candidate_similarity_codes', [])}",
-                    f"chosen_similarity_codes={scope_state['derived_similarity_codes']}",
-                ]
-            )
-        )
-        for detail in scope_state.get("similarity_match_details", []):
-            st.code(
-                "\n".join(
-                    [
-                        f"subgroup: {detail.get('subgroup', '-')}",
-                        f"candidates: {', '.join(detail.get('candidate_similarity_codes', [])) or '-'}",
-                        f"chosen: {', '.join(detail.get('chosen_similarity_codes', [])) or '-'}",
-                        f"reason: {detail.get('match_reason', '-')}",
-                        f"confidence: {detail.get('match_confidence', '-')}",
-                        f"fallback_used: {detail.get('fallback_used', False)}",
-                    ]
-                )
-            )
-
-
 def render_review_step() -> None:
     selected_fields = current_selected_fields()
     derived_scope = derive_scope_state(selected_fields)
@@ -1141,34 +1111,6 @@ def render_review_step() -> None:
     st.markdown(
         f"- 검색 보조 키워드: {', '.join(scope_state['search_terms_for_prior_marks'][:8]) or '-'}"
     )
-
-    with st.expander("개발 디버그", expanded=False):
-        st.code(
-            "\n".join(
-                [
-                    f"selected_kind={scope_state['selected_kind']}",
-                    f"selected_group_id={scope_state['selected_group_id']}",
-                    f"step_scope_sub={scope_state['step_scope_sub']}",
-                    f"selected_subgroup_count={len(scope_state['selected_subgroup_ids'])}",
-                    f"selected_subgroups={scope_state['selected_subgroup_labels']}",
-                    f"candidate_similarity_codes={scope_state.get('candidate_similarity_codes', [])}",
-                    f"chosen_similarity_codes={scope_state['derived_similarity_codes']}",
-                ]
-            )
-        )
-        for detail in scope_state.get("similarity_match_details", []):
-            st.code(
-                "\n".join(
-                    [
-                        f"subgroup: {detail.get('subgroup', '-')}",
-                        f"candidates: {', '.join(detail.get('candidate_similarity_codes', [])) or '-'}",
-                        f"chosen: {', '.join(detail.get('chosen_similarity_codes', [])) or '-'}",
-                        f"reason: {detail.get('match_reason', '-')}",
-                        f"confidence: {detail.get('match_confidence', '-')}",
-                        f"fallback_used: {detail.get('fallback_used', False)}",
-                    ]
-                )
-            )
 
     prev_col, next_col = st.columns(2)
     with prev_col:
@@ -2329,8 +2271,19 @@ elif st.session_state.step == 4:
     analysis = st.session_state.analysis or {}
     field_reports = analysis.get("field_reports", [])
     st.markdown(f"## **'{st.session_state.trademark_name}'** 등록 가능성 검토 결과")
+    st.markdown("### 검토결과입니다.")
     st.markdown("### 선택한 상품군별로 따로 판단한 결과입니다.")
     st.caption("유사군코드는 상품유사군코드.xlsx를 기준으로 자동 도출한 실제 예규 코드만 표시합니다.")
+    st.markdown(
+        """
+        <div class="tip-box">
+        <b>안내</b><br>
+        위 내용은 1차적인 검색 결과로, 정확하지 않을 수 있습니다.<br>
+        정확한 최종 판단은 변리사와 상담하시는 것을 권장합니다.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     render_auri(220)
 
     col1, col2, col3, col4 = st.columns(4)
@@ -2385,7 +2338,7 @@ elif st.session_state.step == 4:
         if report.get("search_failed"):
             st.warning("KIPRIS 검색이 실패하여 결과가 불확실합니다. (안전장치로 점수가 보수적으로 표시될 수 있습니다.)")
         elif report.get("search_partial_failure"):
-            st.warning("KIPRIS 검색이 일부 실패/제한되어 결과 신뢰도가 낮을 수 있습니다. 검색 파이프라인 디버그를 확인하세요.")
+            st.warning("KIPRIS 검색이 일부 실패/제한되어 결과 신뢰도가 낮을 수 있습니다.")
 
         sub1, sub2, sub3, sub4, sub5 = st.columns(5)
         with sub1:
@@ -2398,77 +2351,6 @@ elif st.session_state.step == 4:
             st.metric("역사적 참고자료", f"{report.get('historical_reference_count', 0)}건")
         with sub5:
             st.metric("제외된 후보 건수", f"{report.get('excluded_prior_count', len(excluded_results))}건")
-
-        # ── 검색 파이프라인 디버그 섹션 ──────────────────────────────────────
-        with st.expander("🔍 검색 파이프라인 디버그", expanded=False):
-            if report.get("search_failed"):
-                st.error(f"❌ 검색 엔진 오류: {report.get('search_error_msg')}")
-                st.caption("일부 검색이 실패하여 '0건'으로 오판했을 가능성이 있습니다. 결과 신뢰도가 낮습니다.")
-
-            _pcodes = report.get("selected_primary_codes", [])
-            _rcodes = report.get("selected_related_codes", [])
-            _etcodes = report.get("selected_retail_codes", [])
-            st.markdown(
-                f"**selected_primary_codes**: `{', '.join(_pcodes) or '-'}` | "
-                f"**selected_related_codes**: `{', '.join(_rcodes) or '-'}` | "
-                f"**selected_retail_codes**: `{', '.join(_etcodes) or '-'}`"
-            )
-            st.markdown(
-                f"**merged_candidates**: `{report.get('merged_candidates', 0)}` | "
-                f"**deduped_candidates**: `{report.get('deduped_candidates', 0)}`"
-            )
-            executed_queries = report.get("executed_queries", [])
-            if executed_queries:
-                st.markdown("**search_queries_attempted** / **search_hits_per_query**:")
-                for eq in executed_queries:
-                    hits = eq.get("result_count", 0)
-                    status = eq.get("search_status", "unknown")
-                    
-                    if status == "success_with_hits":
-                        icon = "✅"
-                        status_label = f"SUCCESS ({hits}건)"
-                    elif status == "success_zero_hits":
-                        icon = "⬜"
-                        status_label = "ZERO HITS"
-                    elif status == "transport_error":
-                        icon = "🚨"
-                        status_label = "TRANSPORT ERROR"
-                    elif status == "parse_error":
-                        icon = "⚠️"
-                        status_label = "PARSE ERROR"
-                    elif status == "detail_parse_error":
-                        icon = "🧩"
-                        status_label = "DETAIL PARSE ERROR"
-                    elif status == "blocked_or_unexpected_page":
-                        icon = "⛔"
-                        status_label = "BLOCKED/HTML"
-                    else:
-                        icon = "❓"
-                        status_label = status
-
-                    st.markdown(
-                        f"- {icon} `[{eq.get('query_mode','-')}]` "
-                        f"`[{eq.get('search_mode','mixed')}]` "
-                        f"**{status_label}** | "
-                        f"class={eq.get('class_no','-')} "
-                        f"code={eq.get('code','-') or '(없음)'} | "
-                        f"hits={hits} extracted={eq.get('extracted_total_count',0)} detail_parse={eq.get('detail_parse_count',0)} | "
-                        f"`{eq.get('search_formula','')}`"
-                    )
-                    if eq.get("request_payload_summary"):
-                        st.caption(f"payload: {eq.get('request_payload_summary')}")
-                    if eq.get("response_preview"):
-                        with st.expander(f"Response Preview for {eq.get('query_mode')}", expanded=False):
-                            st.code(eq.get("response_preview"))
-            else:
-                st.caption("executed_queries 정보 없음 (이전 버전 분석 결과)")
-            ota = report.get("overlap_type_analysis", {})
-            if ota:
-                st.markdown(
-                    f"**strongest overlap_type**: `{ota.get('strongest_overlap_type','-')}` | "
-                    f"**strongest prior item**: {ota.get('strongest_matching_prior_item','없음') or '없음'} | "
-                    f"**strongest prior codes**: `{', '.join(ota.get('strongest_matching_prior_codes',[]))  or '-'}`"
-                )
 
         st.markdown("### 📊 점수 산정 및 등록 가능성 분석")
         score_explanation = report.get("score_explanation", {})

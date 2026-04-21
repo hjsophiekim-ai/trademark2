@@ -344,12 +344,6 @@ def _render_single_report(pdf: KoreanPDF, width: float, payload: dict, title: st
     pdf.ln(2)
 
     pdf.kfont(12, bold=True)
-    pdf.cell(0, 8, "Search Debug", new_x="LMARGIN", new_y="NEXT")
-    pdf.kfont(10)
-    _render_search_debug_section(pdf, width, payload)
-    pdf.ln(2)
-
-    pdf.kfont(12, bold=True)
     pdf.cell(0, 8, "Top Prior Marks", new_x="LMARGIN", new_y="NEXT")
     pdf.kfont(10)
     _render_top_priors(pdf, width, payload, payload.get("top_prior", []))
@@ -407,5 +401,12 @@ def generate_report_pdf(payload: dict) -> bytes:
         _render_single_report(pdf, width, payload)
 
     pdf.kfont(8)
-    _write_lines(pdf, width, ["This report is an AI-assisted reference and final legal judgment still requires expert review."])
+    _write_lines(
+        pdf,
+        width,
+        [
+            "본 보고서는 1차적인 검색/분석 결과로, 정확하지 않을 수 있습니다.",
+            "정확한 최종 판단은 변리사와 상담하시는 것을 권장합니다.",
+        ],
+    )
     return bytes(pdf.output())

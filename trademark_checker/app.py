@@ -1441,10 +1441,9 @@ if st.session_state.step == 1:
 
     col1, col2 = st.columns([2, 1])
     with col1:
-        st.text_area(
+        st.text_input(
             "상표명 입력",
             placeholder="예) POOKIE, 사랑해, BRAND ONE, 달빛커피...",
-            height=90,
             label_visibility="collapsed",
             key="trademark_name",
         )

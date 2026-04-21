@@ -405,8 +405,7 @@ def generate_report_pdf(payload: dict) -> bytes:
         pdf,
         width,
         [
-            "본 보고서는 1차적인 검색/분석 결과로, 정확하지 않을 수 있습니다.",
-            "정확한 최종 판단은 변리사와 상담하시는 것을 권장합니다.",
+            "본 결과는 AI 자동 분석 참고용이며, 최종 판단은 반드시 변리사와 상담 하세요.",
         ],
     )
     return bytes(pdf.output())

@@ -2277,9 +2277,7 @@ elif st.session_state.step == 4:
     st.markdown(
         """
         <div class="tip-box">
-        <b>안내</b><br>
-        위 내용은 1차적인 검색 결과로, 정확하지 않을 수 있습니다.<br>
-        정확한 최종 판단은 변리사와 상담하시는 것을 권장합니다.
+        본 결과는 AI 자동 분석 참고용이며, 최종 판단은 반드시 변리사와 상담 하세요.
         </div>
         """,
         unsafe_allow_html=True,
@@ -2577,7 +2575,7 @@ elif st.session_state.step == 4:
     st.markdown(
         """
         <div class="tip-box" style="margin-top:16px;">
-        ⚠️ 본 결과는 AI 자동 분석 참고용이며, 최종 판단은 반드시 <b>변리사와 상담</b>하세요.
+        본 결과는 AI 자동 분석 참고용이며, 최종 판단은 반드시 변리사와 상담 하세요.
         </div>
         """,
         unsafe_allow_html=True,
@@ -2677,7 +2675,7 @@ elif st.session_state.step == 5:
     st.markdown(
         """
     <div class="tip-box" style="margin-top:24px;">
-    ⚠️ 위 제안은 AI 참고용 분석이에요. 최종 결정은 반드시 <b>변리사와 상담</b>하세요.
+    본 결과는 AI 자동 분석 참고용이며, 최종 판단은 반드시 변리사와 상담 하세요.
     </div>
     """,
         unsafe_allow_html=True,

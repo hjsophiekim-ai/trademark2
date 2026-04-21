@@ -1439,34 +1439,38 @@ if st.session_state.step == 1:
     st.markdown("### 등록하고 싶은 상표명을 알려주세요")
     render_auri(260)
 
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.text_input(
+    st.markdown("#### 상표 유형을 선택해주세요")
+    type_options = ["문자만", "문자+로고", "로고만"]
+    current_type = st.session_state.get("trademark_type", "문자만")
+    type_index = type_options.index(current_type) if current_type in type_options else 0
+
+    with st.form("step1_form"):
+        name = st.text_input(
             "상표명 입력",
             placeholder="예) POOKIE, 사랑해, BRAND ONE, 달빛커피...",
+            value=st.session_state.get("trademark_name", ""),
             label_visibility="collapsed",
-            key="trademark_name",
         )
-        name = st.session_state.trademark_name
+        selected_type = st.radio(
+            "상표 유형",
+            type_options,
+            index=type_index,
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        submitted = st.form_submit_button(
+            "다음 단계로 → 상품 선택",
+            use_container_width=True,
+            type="primary",
+        )
 
-    st.markdown("#### 상표 유형을 선택해주세요")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("문자만\n(텍스트 상표)", use_container_width=True):
-            st.session_state.trademark_type = "문자만"
-    with col2:
-        if st.button("문자 + 로고\n(결합 상표)", use_container_width=True):
-            st.session_state.trademark_type = "문자+로고"
-    with col3:
-        if st.button("로고만\n(도형 상표)", use_container_width=True):
-            st.session_state.trademark_type = "로고만"
+    st.markdown(f"선택됨: **{selected_type}**")
 
-    st.markdown(f"선택됨: **{st.session_state.trademark_type}**")
-
-    if st.button("다음 단계로 → 상품 선택", use_container_width=True, type="primary"):
+    if submitted:
         cleaned = name.strip()
         if cleaned:
             st.session_state.trademark_name = cleaned
+            st.session_state.trademark_type = selected_type
             st.session_state.is_coined = False
             st.session_state.step = 2
             st.rerun()

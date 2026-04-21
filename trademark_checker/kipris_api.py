@@ -49,6 +49,8 @@ STATUS_PARSE_ERROR = "parse_error"
 STATUS_DETAIL_PARSE_ERROR = "detail_parse_error"
 STATUS_BLOCKED = "blocked_or_unexpected_page"
 
+_DETAIL_CACHE: dict[str, dict] = {}
+
 QUERY_MODE_LABELS = {
     "primary_sc_only": "TN + primary SC",
     "primary_sc": "TN + class + primary SC",
@@ -385,8 +387,14 @@ def extract_prior_designated_items(item: dict) -> list[dict]:
 
 def fetch_trademark_detail(ann: str) -> dict:
     """상표 상세 정보를 조회한다 (지정상품 및 유사군코드 추출용)."""
+    cached = _DETAIL_CACHE.get(str(ann or ""))
+    if cached is not None:
+        return cached
+
     if USE_MOCK:
-        return {"success": False, "msg": "MOCK mode - detail fetch skipped"}
+        result = {"success": False, "msg": "MOCK mode - detail fetch skipped"}
+        _DETAIL_CACHE[str(ann or "")] = result
+        return result
 
     sess = _get_session()
     # KIPRIS 상세 페이지 URL
@@ -418,18 +426,22 @@ def fetch_trademark_detail(ann: str) -> dict:
                     designated_items = ajax_items
                     sc_codes = sorted(list(set(sc_codes) | set(_parse_similarity_codes_from_html(ajax_html))))
 
-        return {
+        result = {
             "success": True,
             "html": html,
             "sc_codes": sc_codes,
             "designated_items": designated_items,
             "has_designated_items": len(designated_items) > 0
         }
+        _DETAIL_CACHE[str(ann or "")] = result
+        return result
     except Exception as e:
-        return {
+        result = {
             "success": False,
             "msg": f"Detail fetch failed: {str(e)}"
         }
+        _DETAIL_CACHE[str(ann or "")] = result
+        return result
 
 def enrich_search_results_with_item_details(items: list[dict]) -> dict:
     """선행상표 목록에 상세 정보(지정상품/유사군코드)를 연동한다.
@@ -1087,19 +1099,14 @@ def search_all_pages(
             break
         time.sleep(0.5)
 
-    enrich_payload = enrich_search_results_with_item_details(all_items)
-    merged_candidates = len(enrich_payload.get("items", []))
-    enriched_items = dedupe_search_candidates(enrich_payload.get("items", []))
-    deduped_candidates = len(enriched_items)
-    detail_parse_count = int(enrich_payload.get("detail_parse_count", 0))
-    detail_parse_error_count = int(enrich_payload.get("detail_parse_error_count", 0))
+    merged_candidates = len(all_items)
+    deduped_items = dedupe_search_candidates(all_items)
+    deduped_candidates = len(deduped_items)
     
     # search_all_pages에서도 최종 상태를 집계하여 반환
-    final_status = STATUS_SUCCESS_HITS if enriched_items else STATUS_SUCCESS_ZERO
+    final_status = STATUS_SUCCESS_HITS if deduped_items else STATUS_SUCCESS_ZERO
     if last_result and not last_result["success"]:
         final_status = last_result["search_status"]
-    elif enriched_items and detail_parse_count == 0:
-        final_status = STATUS_DETAIL_PARSE_ERROR
 
     return {
         "success": True,
@@ -1107,8 +1114,8 @@ def search_all_pages(
         "result_code": "00",
         "result_msg": "OK",
         "total_count": total_count,
-        "filtered_count": len(enriched_items),
-        "items": enriched_items,
+        "filtered_count": len(deduped_items),
+        "items": deduped_items,
         "mock": last_result.get("mock", False) if last_result else False,
         "query_mode": query_mode,
         "search_mode": _search_mode_for_query_mode(query_mode),
@@ -1119,8 +1126,8 @@ def search_all_pages(
         "extracted_total_count": total_count,
         "merged_candidates": merged_candidates,
         "deduped_candidates": deduped_candidates,
-        "detail_parse_count": detail_parse_count,
-        "detail_parse_error_count": detail_parse_error_count,
+        "detail_parse_count": 0,
+        "detail_parse_error_count": 0,
         "response_text_preview": last_result.get("response_text_preview", "") if last_result else "",
     }
 

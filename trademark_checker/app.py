@@ -11,7 +11,12 @@ except ImportError:
     from .resource_paths import docs_dir as _docs_dir
 
 from improvement import get_improvements
-from kipris_api import build_kipris_search_plan, dedupe_search_candidates, search_all_pages
+from kipris_api import (
+    build_kipris_search_plan,
+    dedupe_search_candidates,
+    enrich_search_results_with_item_details,
+    search_all_pages,
+)
 from search_health import classify_query, summarize_health
 from nice_catalog import (
     build_selection_summary,
@@ -2216,6 +2221,11 @@ elif st.session_state.step == 4:
             all_results = dedupe_search_candidates(all_results)
             deduped_count = len(all_results)
 
+            enrich_payload = enrich_search_results_with_item_details(all_results)
+            all_results = dedupe_search_candidates(enrich_payload.get("items", []))
+            detail_parse_count = int(enrich_payload.get("detail_parse_count", 0))
+            detail_parse_error_count = int(enrich_payload.get("detail_parse_error_count", 0))
+
             field_analysis = evaluate_registration(
                 trademark_name=st.session_state.trademark_name,
                 trademark_type=st.session_state.trademark_type,
@@ -2279,6 +2289,8 @@ elif st.session_state.step == 4:
                     "executed_queries": executed_queries,
                     "merged_candidates": merged_count,
                     "deduped_candidates": deduped_count,
+                    "detail_parse_count": detail_parse_count,
+                    "detail_parse_error_count": detail_parse_error_count,
                     "search_source": "실제 KIPRIS 데이터" if used_real_search else "Mock 데이터 또는 제한 조회",
                     "search_health": {
                         "total_queries": search_health.total_queries,

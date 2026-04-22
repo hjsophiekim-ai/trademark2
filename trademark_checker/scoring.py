@@ -433,6 +433,7 @@ def _distinctiveness_analysis(
     selected_fields: Iterable[dict],
     selected_classes: Iterable[int | str] | None = None,
     selected_codes: Iterable[str] | None = None,
+    has_live_exact_mark_any_class: bool = False,
 ) -> dict:
     return evaluate_absolute_refusal(
         trademark_name=trademark_name,
@@ -442,6 +443,7 @@ def _distinctiveness_analysis(
         selected_fields=selected_fields,
         selected_classes=selected_classes,
         selected_codes=selected_codes,
+        has_live_exact_mark_any_class=has_live_exact_mark_any_class,
     )
 
 def _status_profile(status: str) -> dict:
@@ -454,6 +456,15 @@ def _mark_identity(source: str, target: str) -> str:
     if left and right and left == right:
         return "exact"
     return "similar"
+
+
+def has_live_exact_mark_in_any_class(trademark_name: str, prior_items: Iterable[dict]) -> bool:
+    for item in prior_items:
+        if item.get("mark_identity") != "exact":
+            continue
+        if item.get("counts_toward_final_score"):
+            return True
+    return False
 
 
 def _extract_basis_from_text(text: str) -> list[str]:
@@ -1185,6 +1196,9 @@ def evaluate_registration(
 ) -> dict:
     selected_fields = list(selected_fields or [])
     context = _selected_context(selected_classes, selected_codes, selected_fields, specific_product)
+    normalized_priors = _merge_prior_items(prior_items, trademark_name)
+    has_live_exact_mark_any_class = has_live_exact_mark_in_any_class(trademark_name, normalized_priors)
+
     distinctiveness = _distinctiveness_analysis(
         trademark_name=trademark_name,
         is_coined=is_coined,
@@ -1193,9 +1207,8 @@ def evaluate_registration(
         selected_fields=selected_fields,
         selected_classes=context.get("selected_nice_classes", []),
         selected_codes=context.get("selected_similarity_codes", []),
+        has_live_exact_mark_any_class=has_live_exact_mark_any_class,
     )
-
-    normalized_priors = _merge_prior_items(prior_items, trademark_name)
 
     included: list[dict] = []
     excluded: list[dict] = []

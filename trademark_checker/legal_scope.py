@@ -576,6 +576,48 @@ def _famous_mark_findings(trademark_name: str) -> list[dict]:
     return findings
 
 
+def assess_distinctiveness_strength(
+    trademark_name: str,
+    selected_fields: Iterable[dict] | None,
+    selected_classes: Iterable[int | str] | None,
+    specific_product: str,
+    has_live_exact_mark_any_class: bool = False,
+) -> str:
+    selected_fields = list(selected_fields or [])
+    selected_classes = [int(value) for value in (selected_classes or []) if str(value).strip()]
+    context = _context_tokens(specific_product, selected_fields)
+    compact_mark = _compact(trademark_name)
+
+    if not compact_mark:
+        return "inherently_distinctive"
+
+    if has_live_exact_mark_any_class:
+        return "inherently_distinctive"
+
+    geo_finding = _geo_match_payload(trademark_name)
+    if geo_finding and geo_finding.get("basis") == "제33-1-4":
+        return "non_distinctive_geographic"
+
+    for claim, classes in QUALITY_CLAIMS.items():
+        if _compact(claim) and _compact(claim) in compact_mark:
+            if any(cls in classes for cls in selected_classes):
+                return "non_distinctive_descriptive"
+
+    if compact_mark in COMMON_SURNAMES:
+        return "weak_but_registrable"
+
+    if len(compact_mark) <= 2 and re.fullmatch(r"[가-힣]{1,2}", compact_mark or ""):
+        return "weak_but_registrable"
+
+    if compact_mark in context:
+        return "non_distinctive_generic"
+
+    if compact_mark in NON_DISTINCTIVE_WORDS:
+        return "weak_but_registrable"
+
+    return "inherently_distinctive"
+
+
 def evaluate_absolute_refusal(
     trademark_name: str,
     trademark_type: str,
@@ -584,6 +626,7 @@ def evaluate_absolute_refusal(
     selected_fields: Iterable[dict] | None = None,
     selected_classes: Iterable[int | str] | None = None,
     selected_codes: Iterable[str] | None = None,
+    has_live_exact_mark_any_class: bool = False,
 ) -> dict:
     """제33조/제34조 기반 절대적 거절사유 및 식별력 리스크를 평가한다."""
 
@@ -600,15 +643,6 @@ def evaluate_absolute_refusal(
 
     geo_finding = _geo_match_payload(trademark_name)
     _append_finding(findings, geo_finding)
-    if geo_finding and geo_finding["basis"] == "제33-1-4":
-        findings.append(
-            {
-                "basis": "제33-1-7",
-                "level": "high",
-                "cap": geo_finding["cap"] + 3,
-                "reason": "지리명 또는 그 근접 변형만으로는 출처식별력이 부족할 수 있어 기타 식별력 없음 위험도 함께 봅니다.",
-            }
-        )
 
     if compact_mark in public_keywords_normalized or any(
         _compact(part) in public_keywords_normalized for part in mark_parts
@@ -622,71 +656,54 @@ def evaluate_absolute_refusal(
             }
         )
 
-    # 1. 식별력 없는 일반 단어/사전 단어 체크 (제33조 제1항 제7호 - 기타 식별력 없는 표장)
-    # 조어상표(is_coined=false)이고, 단어가 일반 사전에 등재된 순수 명사/형용사/동사이면 무조건 감점
-    # 고양이, 사과, 나무 등 단일 普通명사뿐 아니라 사랑, 행복 등 감정 표현에도 적용
-    if not is_coined:
-        compact = _compact(trademark_name)
-        # 전체 표장이 일반 단어 리스트에 있는지 확인
-        if compact in NON_DISTINCTIVE_WORDS:
+    distinctiveness_strength = assess_distinctiveness_strength(
+        trademark_name=trademark_name,
+        selected_fields=selected_fields,
+        selected_classes=selected_classes,
+        specific_product=specific_product,
+        has_live_exact_mark_any_class=has_live_exact_mark_any_class,
+    )
+
+    for claim, classes in QUALITY_CLAIMS.items():
+        claim_compact = _compact(claim)
+        if not claim_compact:
+            continue
+        if claim_compact in compact_mark and any(cls in classes for cls in selected_classes):
             findings.append(
                 {
-                    "basis": "제33-1-7",
+                    "basis": "제33-1-3",
                     "level": "fatal",
-                    "cap": 5,
-                    "reason": f"'{trademark_name}'는 일반 사전에 등재된 순수 명사/형용사/감정 표현 단어로서 식별력이 매우 부족합니다. 특정인에게 독점권을 부여하기 어려운 공익적 사유(제33조 제1항 제7호)로 인해 등록 가능성이 극히 낮습니다.",
+                    "cap": 8,
+                    "reason": f"'{claim}' 표현은 지정상품/서비스의 성질·용도·업종을 직접 표시합니다.",
                 }
             )
-        else:
-            # 표장의 각 어절이 일반 단어인지 확인
-            # 'G트리'처럼 영문/숫자가 섞인 경우 단순명사로 보지 않음
-            has_alphanum = bool(re.search(r"[a-z0-9]", compact))
-            
-            parts = _iter_text_parts(trademark_name)
-            for part in parts:
-                part_compact = _compact(part)
-                # 단독으로 쓰였을 때 식별력이 없는 단어이면서, 전체 표장이 그 단어만으로 구성되거나 
-                # 또는 결합이 매우 단순한 경우만 차단
-                if part_compact in NON_DISTINCTIVE_WORDS and len(part_compact) >= 2:
-                    # 'G트리'처럼 'G' + '트리' 형태는 '트리'가 일반단어라도 'G'와의 결합으로 식별력을 가질 수 있음
-                    # 따라서 영문/숫자가 포함된 결합표장은 여기서 제외
-                    if not has_alphanum:
-                        findings.append(
-                            {
-                                "basis": "제33-1-7",
-                                "level": "fatal",
-                                "cap": 12,
-                                "reason": f"'{trademark_name}'의 구성 요소 '{part}'는 일반적으로 사용되는 기본 단어입니다. 상표법 제33조 제1항 제7호에 해당하여 식별력이 부족합니다.",
-                            }
-                        )
-                        break
+            break
 
-    # 조어/고유발생 상표가 아닌 경우, 且 단어가 단순 普通명사 1개로 구성되어 있으면
-    # 即使不在上面的リストにも追加で 감점 (예: "강아지", "사과" 등 단순 사물명)
-    # This is a catch-all: if is_coined=False and the mark is a single short Korean noun
-    # not already caught, apply a moderate-to-high restriction.
-    if (
-        not is_coined
-        and compact_mark not in NON_DISTINCTIVE_WORDS
-        and not any(finding["basis"] == "제33-1-7" for finding in findings)
+    if distinctiveness_strength == "non_distinctive_generic" and not any(
+        finding["basis"] in {"제33-1-1", "제33-1-3"} for finding in findings
     ):
-        parts = _iter_text_parts(trademark_name)
-        if len(parts) == 1 and len(compact_mark) >= 2 and len(compact_mark) <= 6:
-            # 단일 어절이고 2~6자이면 普通명사일 가능성 높음
-            # 'G트리'처럼 영문/숫자가 포함된 경우는 조어로 보아 제외
-            has_alphanum = bool(re.search(r"[a-z0-9]", compact_mark))
-            if not has_alphanum:
-                is_korean_noun = bool(re.search(r"[가-힣]", trademark_name))
-                if is_korean_noun:
-                    findings.append(
-                        {
-                            "basis": "제33-1-7",
-                            "level": "high",
-                            "cap": 30,
-                            "reason": f"'{trademark_name}'는 일반적인 사물/성질 명칭으로 보여지며, 조어 상표가 아니므로 식별력이 부족할 가능성이 있습니다.",
-                        }
-                    )
-    # 2. 기술적 표장 (제33조 제1항 제3호 - 성질표시 표장)
+        findings.append(
+            {
+                "basis": "제33-1-1",
+                "level": "fatal",
+                "cap": 12,
+                "reason": "표장이 지정상품/서비스의 보통명칭 또는 핵심 명칭 자체와 가깝습니다.",
+            }
+        )
+
+    if distinctiveness_strength == "non_distinctive_descriptive" and not any(
+        finding["basis"] == "제33-1-3" for finding in findings
+    ):
+        findings.append(
+            {
+                "basis": "제33-1-3",
+                "level": "high",
+                "cap": 48,
+                "reason": "표장이 지정상품/서비스의 성질·용도·품질 등을 직접 표시하는 표현에 가깝습니다.",
+            }
+        )
+
+    # 기술적 표장 (제33조 제1항 제3호 - 성질표시 표장)
     # "pretty skin"에서 "pretty"를 감지하려면 공백 제거 후 combined_mark에서 체크하는 기존 방식과
     #并存하여, 각 어절 단위(공백-split)에서도 패턴 체크
     if not is_coined:
@@ -768,15 +785,6 @@ def evaluate_absolute_refusal(
                 "reason": "표장이 지정상품/서비스의 성질·용도·업종을 직접 설명하는 표현과 밀접합니다.",
             }
         )
-    elif not is_coined and context and any(part in context for part in mark_parts):
-        findings.append(
-            {
-                "basis": "제33-1-7",
-                "level": "medium",
-                "cap": 62,
-                "reason": "표장이 지정상품 문맥과 지나치게 맞닿아 있어 출처식별력이 약할 수 있습니다.",
-            }
-        )
 
     if not is_coined and compact_mark in {"brand", "mall", "service", "store", "tree", "브랜드", "몰", "서비스"}:
         findings.append(
@@ -795,8 +803,6 @@ def evaluate_absolute_refusal(
     cap = min((finding["cap"] for finding in findings), default=95)
 
     distinctiveness_score = 86
-    if not is_coined:
-        distinctiveness_score -= 10
     for finding in findings:
         if finding["level"] == "fatal":
             distinctiveness_score -= 35
@@ -818,16 +824,12 @@ def evaluate_absolute_refusal(
         for basis in bases
     )
 
-    if level == "fatal":
-        label = "거절 가능성 큼"
-    elif level == "high":
+    if level in {"fatal", "high"}:
         label = "거절 가능성 큼"
     elif level == "medium":
         label = "식별력 약함"
-    elif is_coined:
-        label = "식별력 문제 없음"
     else:
-        label = "보통 수준"
+        label = "식별력 문제 없음"
 
     reasons = [finding["reason"] for finding in findings]
     # 가장 낮은 cap을 가진 사유를 우선적으로 summary로 채택

@@ -2123,6 +2123,7 @@ elif st.session_state.step == 4:
                         similar_goods_code=code,
                         class_no=step.get("class_no"),
                         max_pages=step.get("max_pages", 3),
+                        rows_per_page=20,
                         query_mode=step.get("query_mode", ""),
                     )
                     

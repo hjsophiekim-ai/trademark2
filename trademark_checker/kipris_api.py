@@ -15,6 +15,7 @@ import re
 import sys
 import time
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 from pathlib import Path
 
 import requests
@@ -50,6 +51,9 @@ STATUS_DETAIL_PARSE_ERROR = "detail_parse_error"
 STATUS_BLOCKED = "blocked_or_unexpected_page"
 
 _DETAIL_CACHE: dict[str, dict] = {}
+_SEARCH_CACHE_MAX = 256
+_SEARCH_CACHE_TTL_SECONDS = 600
+_SEARCH_CACHE: "OrderedDict[tuple[str, str, str, int, int], tuple[float, dict]]" = OrderedDict()
 
 QUERY_MODE_LABELS = {
     "primary_sc_only": "TN + primary SC",
@@ -64,6 +68,32 @@ QUERY_MODE_LABELS = {
 }
 
 _SESSION: requests.Session | None = None
+
+
+def _cache_get(key: tuple[str, str, str, int, int]) -> dict | None:
+    cached_entry = _SEARCH_CACHE.get(key)
+    if cached_entry is None:
+        return None
+    cached_at, cached = cached_entry
+    if (time.time() - float(cached_at)) > _SEARCH_CACHE_TTL_SECONDS:
+        _SEARCH_CACHE.pop(key, None)
+        return None
+    _SEARCH_CACHE.move_to_end(key)
+    return {
+        **cached,
+        "items": [dict(item) for item in cached.get("items", [])],
+    }
+
+
+def _cache_set(key: tuple[str, str, str, int, int], value: dict) -> None:
+    _SEARCH_CACHE[key] = (time.time(), {
+        **value,
+        "items": [dict(item) for item in value.get("items", [])],
+        "response_text_preview": "",
+    })
+    _SEARCH_CACHE.move_to_end(key)
+    while len(_SEARCH_CACHE) > _SEARCH_CACHE_MAX:
+        _SEARCH_CACHE.popitem(last=False)
 
 
 def _dedupe_strings(values: list[str] | tuple[str, ...] | set[str]) -> list[str]:
@@ -939,7 +969,7 @@ def search_trademark(
     word: str,
     similar_goods_code: str = "",
     class_no: str | int | None = None,
-    num_of_rows: int = 10,
+    num_of_rows: int = 20,
     page_no: int = 1,
     query_mode: str = "",
 ) -> dict:
@@ -951,6 +981,18 @@ def search_trademark(
     )
     if query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only"}:
         target_class = ""
+
+    cache_key = (
+        str(query_mode or ""),
+        str(word or "").strip(),
+        f"{_normalize_class_no(target_class)}|{str(similar_goods_code or '').strip().upper()}",
+        int(page_no),
+        int(num_of_rows),
+    )
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     expression = _build_search_expression(
         word,
         similar_goods_code,
@@ -969,28 +1011,44 @@ def search_trademark(
 
     sess = _get_session()
     resp_text = ""
-    try:
-        resp = sess.post(
-            BASE_URL,
-            data=payload,
-            timeout=20,
-        )
-        resp_text = resp.text.strip()
-        resp.raise_for_status()
-    except requests.exceptions.Timeout:
-        return _err("KIPRIS request timed out after 20s", status=STATUS_TRANSPORT_ERROR)
-    except requests.exceptions.RequestException as exc:
-        return _err(str(exc), status=STATUS_TRANSPORT_ERROR)
+    transport_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            resp = sess.post(
+                BASE_URL,
+                data=payload,
+                timeout=20,
+            )
+            resp_text = resp.text.strip()
+            resp.raise_for_status()
+            transport_exc = None
+        except requests.exceptions.Timeout as exc:
+            transport_exc = exc
+        except requests.exceptions.RequestException as exc:
+            transport_exc = exc
 
-    # 1단계: Transport success 확인
-    if not resp_text:
-        return _err("Empty response from KIPRIS", status=STATUS_BLOCKED)
-    
-    if "<!DOCTYPE html>" in resp_text.lower() or "<html" in resp_text.lower():
-        # KIPRIS may return HTML for blocks/errors
-        return _err("Unexpected HTML response (possible block or captcha)", 
-                    status=STATUS_BLOCKED, 
-                    preview=resp_text[:500])
+        if transport_exc is not None:
+            if attempt == 0:
+                time.sleep(0.6)
+                continue
+            return _err(str(transport_exc), status=STATUS_TRANSPORT_ERROR)
+
+        if not resp_text:
+            if attempt == 0:
+                time.sleep(0.6)
+                continue
+            return _err("Empty response from KIPRIS", status=STATUS_BLOCKED)
+
+        if "<!doctype html" in resp_text.lower() or "<html" in resp_text.lower():
+            if attempt == 0:
+                time.sleep(0.9)
+                continue
+            return _err(
+                "Unexpected HTML response (possible block or captcha)",
+                status=STATUS_BLOCKED,
+                preview=resp_text[:500],
+            )
+        break
 
     # 2단계: Result extraction
     try:
@@ -1012,7 +1070,7 @@ def search_trademark(
 
     status = STATUS_SUCCESS_HITS if items else STATUS_SUCCESS_ZERO
     
-    return {
+    payload_out = {
         "success": True,
         "search_status": status,
         "http_status": 200,
@@ -1035,8 +1093,10 @@ def search_trademark(
             "similarGroupCode": payload.get("similarGroupCode", ""),
             "expression": payload.get("expression", ""),
         },
-        "response_text_preview": resp_text[:500],
+        "response_text_preview": "",
     }
+    _cache_set(cache_key, payload_out)
+    return payload_out
 
 
 def search_all_pages(
@@ -1044,7 +1104,7 @@ def search_all_pages(
     similar_goods_code: str = "",
     class_no: str | int | None = None,
     max_pages: int = 5,
-    rows_per_page: int = 10,
+    rows_per_page: int = 20,
     query_mode: str = "",
 ) -> dict:
     all_items: list[dict] = []
@@ -1097,7 +1157,9 @@ def search_all_pages(
 
         if page * rows_per_page >= total_count:
             break
-        time.sleep(0.5)
+        if len(page_items) < rows_per_page:
+            break
+        time.sleep(0.15)
 
     merged_candidates = len(all_items)
     deduped_items = dedupe_search_candidates(all_items)

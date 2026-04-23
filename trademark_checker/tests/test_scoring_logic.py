@@ -69,6 +69,171 @@ class ScoringStatusTests(unittest.TestCase):
         self.assertEqual(top["scope_bucket"], "exact_scope_candidates")
         self.assertLessEqual(result["score"], 18)
 
+    def test_exact_live_blocker_same_class_without_sc_code_is_not_underrated(self) -> None:
+        result = run_eval(
+            trademark_name="LexAI",
+            selected_class="9",
+            selected_codes=["G0901"],
+            prior_items=[
+                {
+                    "applicationNumber": "1-no-sc",
+                    "trademarkName": "LexAI",
+                    "registerStatus": "등록",
+                    "classificationCode": "9",
+                    "similarityGroupCode": "",
+                    "prior_designated_items": [
+                        {"prior_item_label": "downloadable software", "prior_class_no": "9", "prior_similarity_codes": []}
+                    ],
+                    "applicantName": "A",
+                }
+            ],
+            specific_product="소프트웨어",
+        )
+
+        top = result["top_prior"][0]
+        self.assertEqual(top["mark_identity"], "exact")
+        self.assertTrue(top.get("exact_override", {}).get("should_override"))
+        self.assertEqual(top["mark_similarity"], 100)
+        self.assertNotEqual(top.get("overlap_type"), "same_class_only")
+        self.assertGreaterEqual(int(top.get("product_similarity_score", 0)), 55)
+        self.assertGreaterEqual(int(top.get("confusion_score", 0)), 88)
+        self.assertLessEqual(int(result.get("score", 100)), 35)
+
+    def test_exact_live_blocker_class25_apparel_without_sc_code_uses_fallback(self) -> None:
+        result = run_eval(
+            trademark_name="FRESHWEAR",
+            selected_class="25",
+            selected_codes=[],
+            prior_items=[
+                {
+                    "applicationNumber": "25-no-sc",
+                    "trademarkName": "FRESHWEAR",
+                    "registerStatus": "등록",
+                    "classificationCode": "25",
+                    "similarityGroupCode": "",
+                    "prior_designated_items": [
+                        {"prior_item_label": "clothing", "prior_class_no": "25", "prior_similarity_codes": []}
+                    ],
+                    "applicantName": "A",
+                }
+            ],
+            specific_product="의류",
+            selected_kind="goods",
+        )
+        top = result["top_prior"][0]
+        self.assertEqual(top["mark_identity"], "exact")
+        self.assertTrue(top.get("exact_override", {}).get("should_override"))
+        self.assertNotEqual(top.get("overlap_type"), "same_class_only")
+        self.assertGreaterEqual(int(top.get("product_similarity_score", 0)), 55)
+
+    def test_exact_live_blocker_class30_food_without_sc_code_uses_fallback(self) -> None:
+        result = run_eval(
+            trademark_name="MORNINGTEA",
+            selected_class="30",
+            selected_codes=[],
+            prior_items=[
+                {
+                    "applicationNumber": "30-no-sc",
+                    "trademarkName": "MORNINGTEA",
+                    "registerStatus": "등록",
+                    "classificationCode": "30",
+                    "similarityGroupCode": "",
+                    "prior_designated_items": [
+                        {"prior_item_label": "coffee; tea", "prior_class_no": "30", "prior_similarity_codes": []}
+                    ],
+                    "applicantName": "A",
+                }
+            ],
+            specific_product="커피",
+            selected_kind="goods",
+        )
+        top = result["top_prior"][0]
+        self.assertEqual(top["mark_identity"], "exact")
+        self.assertTrue(top.get("exact_override", {}).get("should_override"))
+        self.assertNotEqual(top.get("overlap_type"), "same_class_only")
+        self.assertGreaterEqual(int(top.get("product_similarity_score", 0)), 55)
+
+    def test_exact_live_blocker_class35_retail_without_sc_code_uses_fallback(self) -> None:
+        result = run_eval(
+            trademark_name="GREENMART",
+            selected_class="35",
+            selected_codes=[],
+            prior_items=[
+                {
+                    "applicationNumber": "35-no-sc",
+                    "trademarkName": "GREENMART",
+                    "registerStatus": "등록",
+                    "classificationCode": "35",
+                    "similarityGroupCode": "",
+                    "prior_designated_items": [
+                        {"prior_item_label": "온라인쇼핑몰업", "prior_class_no": "35", "prior_similarity_codes": []}
+                    ],
+                    "applicantName": "A",
+                }
+            ],
+            specific_product="판매업",
+            selected_kind="services",
+        )
+        top = result["top_prior"][0]
+        self.assertEqual(top["mark_identity"], "exact")
+        self.assertTrue(top.get("exact_override", {}).get("should_override"))
+        self.assertNotEqual(top.get("overlap_type"), "same_class_only")
+        self.assertGreaterEqual(int(top.get("product_similarity_score", 0)), 55)
+
+    def test_exact_live_blocker_class42_saas_without_sc_code_uses_fallback(self) -> None:
+        result = run_eval(
+            trademark_name="CLOUDPULSE",
+            selected_class="42",
+            selected_codes=[],
+            prior_items=[
+                {
+                    "applicationNumber": "42-no-sc",
+                    "trademarkName": "CLOUDPULSE",
+                    "registerStatus": "등록",
+                    "classificationCode": "42",
+                    "similarityGroupCode": "",
+                    "prior_designated_items": [
+                        {"prior_item_label": "SaaS platform", "prior_class_no": "42", "prior_similarity_codes": []}
+                    ],
+                    "applicantName": "A",
+                }
+            ],
+            specific_product="SaaS",
+            selected_kind="services",
+        )
+        top = result["top_prior"][0]
+        self.assertEqual(top["mark_identity"], "exact")
+        self.assertTrue(top.get("exact_override", {}).get("should_override"))
+        self.assertNotEqual(top.get("overlap_type"), "same_class_only")
+        self.assertGreaterEqual(int(top.get("product_similarity_score", 0)), 60)
+
+    def test_exact_live_blocker_class44_medical_without_sc_code_uses_fallback(self) -> None:
+        result = run_eval(
+            trademark_name="WELLCLINIC",
+            selected_class="44",
+            selected_codes=[],
+            prior_items=[
+                {
+                    "applicationNumber": "44-no-sc",
+                    "trademarkName": "WELLCLINIC",
+                    "registerStatus": "등록",
+                    "classificationCode": "44",
+                    "similarityGroupCode": "",
+                    "prior_designated_items": [
+                        {"prior_item_label": "medical clinic services", "prior_class_no": "44", "prior_similarity_codes": []}
+                    ],
+                    "applicantName": "A",
+                }
+            ],
+            specific_product="의료업",
+            selected_kind="services",
+        )
+        top = result["top_prior"][0]
+        self.assertEqual(top["mark_identity"], "exact")
+        self.assertTrue(top.get("exact_override", {}).get("should_override"))
+        self.assertNotEqual(top.get("overlap_type"), "same_class_only")
+        self.assertGreaterEqual(int(top.get("product_similarity_score", 0)), 60)
+
     def test_exact_mark_but_irrelevant_scope_is_not_direct_penalty(self) -> None:
         result = run_eval(
             trademark_name="LexAI",

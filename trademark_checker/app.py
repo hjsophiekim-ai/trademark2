@@ -168,6 +168,28 @@ def _format_hit_sources_brief(hit_sources: list[dict], limit: int = 3) -> str:
     return " ; ".join(parts)
 
 
+def _format_exact_override_badges(item: dict) -> str:
+    exact_override = item.get("exact_override", {}) if isinstance(item.get("exact_override"), dict) else {}
+    if not exact_override.get("should_override"):
+        return ""
+    return "완전 동일표장 | 정규화 기준 완전 일치 | exact override 적용"
+
+
+def _format_exact_override_details(item: dict) -> str:
+    exact_override = item.get("exact_override", {}) if isinstance(item.get("exact_override"), dict) else {}
+    if not exact_override.get("should_override"):
+        return ""
+    original_type = _safe_inline_text(exact_override.get("original_overlap_type", item.get("overlap_type_original", "")))
+    final_type = _safe_inline_text(exact_override.get("final_overlap_type", item.get("overlap_type", "")))
+    original_score = float(exact_override.get("original_product_similarity_score", item.get("product_similarity_score_original", 0)) or 0)
+    adjusted_score = float(exact_override.get("adjusted_product_similarity_score", item.get("product_similarity_score", 0)) or 0)
+    reason = _safe_inline_text(exact_override.get("override_reason", ""))
+    extra = f"overlap {original_type} → {final_type} | 상품점수 {int(original_score)} → {int(adjusted_score)}"
+    if reason:
+        extra = extra + f" | 사유: {reason}"
+    return extra
+
+
 def _build_hit_source_rows(item: dict) -> list[dict]:
     rows = []
     for hit in (item.get("hit_sources", []) or []):
@@ -2580,6 +2602,9 @@ elif st.session_state.step == 4:
                                 <small>출원인: {item['applicantName']} | 점수 반영 여부: {item.get('score_reflection_label', '-')}</small><br>
                                 <small>상품군 판단: {item.get('product_similarity_label', '-')} | {item.get('product_reason', '-')}</small><br>
                                 <small>표장 동일성: {item.get('mark_identity_label', '-')}</small><br>
+                                {f"<small>배지: {_format_exact_override_badges(item)}</small><br>" if _format_exact_override_badges(item) else ""}
+                                {f"<small>exact override 상세: {_format_exact_override_details(item)}</small><br>" if _format_exact_override_details(item) else ""}
+                                {f"<small>참고: 완전 동일표장 사건에서는 발음 분석은 보조 설명이며 위험도를 낮추는 근거로 사용하지 않습니다.</small><br>" if (isinstance(item.get('exact_override'), dict) and item.get('exact_override', {}).get('should_override')) else ""}
                                 <small>검색 경로: {_format_hit_sources_brief(item.get('hit_sources', []) or [], limit=3)}</small>
                             </td>
                             <td style="width:40%; text-align:right; vertical-align:top;">
@@ -2625,6 +2650,7 @@ elif st.session_state.step == 4:
                         "류": row["classificationCode"],
                         "출원인": row["applicantName"],
                         "검색경로": _format_hit_sources_brief(row.get("hit_sources", []) or [], limit=2),
+                        "exact_override": "Y" if (isinstance(row.get("exact_override"), dict) and row.get("exact_override", {}).get("should_override")) else "",
                     }
                     for row in results[:10]
                 ]
@@ -2639,6 +2665,23 @@ elif st.session_state.step == 4:
                 if hit_rows:
                     st.markdown("### 검색 근거(디버그)")
                     st.dataframe(pd.DataFrame(hit_rows), use_container_width=True, hide_index=True)
+                    override_rows = []
+                    for row in (results[:10] + excluded_results[:10]):
+                        ex = row.get("exact_override", {}) if isinstance(row.get("exact_override"), dict) else {}
+                        override_rows.append(
+                            {
+                                "상표명": strip_html(row.get("trademarkName", "")),
+                                "출원번호": str(row.get("applicationNumber", "")),
+                                "mark_identity": str(row.get("mark_identity", "")),
+                                "exact_override": bool(ex.get("should_override")),
+                                "original_overlap_type": str(ex.get("original_overlap_type", row.get("overlap_type_original", "")) or ""),
+                                "final_overlap_type": str(ex.get("final_overlap_type", row.get("overlap_type", "")) or ""),
+                                "original_product_score": int(ex.get("original_product_similarity_score", row.get("product_similarity_score_original", 0)) or 0),
+                                "adjusted_product_score": int(ex.get("adjusted_product_similarity_score", row.get("product_similarity_score", 0)) or 0),
+                            }
+                        )
+                    st.markdown("### exact override(디버그)")
+                    st.dataframe(pd.DataFrame(override_rows), use_container_width=True, hide_index=True)
                 else:
                     st.info("표시할 검색 근거(hit_sources)가 없습니다.")
         else:

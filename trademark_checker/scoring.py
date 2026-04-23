@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from difflib import SequenceMatcher
 from typing import Iterable, List
@@ -72,6 +73,10 @@ OVERLAP_TYPE_ALIASES = {
     "related_primary_code_overlap": "related_primary_overlap",
     "retail_code_with_goods_overlap": "related_primary_overlap",
     "retail_code_overlap_only": "retail_overlap_only",
+    "exact_same_mark_same_class": "exact_same_mark_same_class",
+    "exact_same_mark_same_class_near_goods": "exact_same_mark_same_class_near_goods",
+    "exact_same_mark_related_goods": "exact_same_mark_related_goods",
+    "exact_same_mark_cross_class_trade_link": "exact_same_mark_cross_class_trade_link",
     "class35_direct_retail_link": "class35_direct_retail_link",
     "class35_strong_trade_link": "class35_strong_trade_link",
     "class35_general_market_link": "class35_general_market_link",
@@ -89,6 +94,10 @@ OVERLAP_TYPE_LABELS = {
     "exact_primary_overlap": "기본 유사군코드 직접 일치",
     "related_primary_overlap": "근접 유사군코드 또는 기초상품 연계 충돌",
     "retail_overlap_only": "판매업 코드만 일치",
+    "exact_same_mark_same_class": "완전 동일표장 + 동일 류(강한 충돌)",
+    "exact_same_mark_same_class_near_goods": "완전 동일표장 + 동일 류(근접 업종)",
+    "exact_same_mark_related_goods": "완전 동일표장 + 관련 상품/서비스",
+    "exact_same_mark_cross_class_trade_link": "완전 동일표장 + 타 류(강한 거래 연계)",
     "class35_direct_retail_link": "제35류 직접 판매/유통 연계",
     "class35_strong_trade_link": "제35류 강한 거래 연계",
     "class35_general_market_link": "제35류 일반 유통 연계",
@@ -99,9 +108,13 @@ OVERLAP_TYPE_LABELS = {
 }
 OVERLAP_TYPE_RANKS = {
     "exact_primary_overlap": 5,
+    "exact_same_mark_same_class": 5,
+    "exact_same_mark_same_class_near_goods": 5,
     "related_primary_overlap": 4,
+    "exact_same_mark_related_goods": 4,
     "class35_direct_retail_link": 4,
     "class35_strong_trade_link": 3,
+    "exact_same_mark_cross_class_trade_link": 3,
     "class35_general_market_link": 2,
     "class35_weak_business_support": 1,
     "class35_no_material_link": 0,
@@ -521,6 +534,201 @@ def _selected_context(
     return normalized
 
 
+def detect_exact_mark_override(
+    target_mark: str,
+    prior_mark: str,
+    prior_status: str,
+    target_classes: list[str],
+    prior_classes: list[str],
+    target_context: dict,
+    prior_context: dict,
+    product_context: dict,
+) -> dict:
+    if str(os.getenv("TRADEMARK_DISABLE_EXACT_OVERRIDE", "") or "").strip() == "1":
+        return {
+            "is_exact_mark": _mark_identity(target_mark, prior_mark) == "exact",
+            "should_override": False,
+            "override_reason": "",
+            "mark_similarity_floor": 0,
+            "confusion_floor": 0,
+            "overlap_type_override": "",
+            "product_similarity_floor": 0,
+        }
+
+    is_exact_mark = _mark_identity(target_mark, prior_mark) == "exact"
+    status_profile = _status_profile(prior_status)
+    is_live = bool(status_profile.get("counts_toward_final_score"))
+    if not (is_exact_mark and is_live):
+        return {
+            "is_exact_mark": bool(is_exact_mark),
+            "should_override": False,
+            "override_reason": "",
+            "mark_similarity_floor": 0,
+            "confusion_floor": 0,
+            "overlap_type_override": "",
+            "product_similarity_floor": 0,
+        }
+
+    product_bucket = _canonical_overlap_type(product_context.get("overlap_type", product_context.get("bucket", "")))
+    if product_bucket in {
+        "exact_primary_overlap",
+        "class35_direct_retail_link",
+        "class35_strong_trade_link",
+        "class35_general_market_link",
+        "class35_weak_business_support",
+        "class35_no_material_link",
+    }:
+        return {
+            "is_exact_mark": True,
+            "should_override": False,
+            "override_reason": "",
+            "mark_similarity_floor": 0,
+            "confusion_floor": 0,
+            "overlap_type_override": "",
+            "product_similarity_floor": 0,
+        }
+
+    target_classes_norm = [str(x) for x in (target_classes or []) if str(x).strip()]
+    prior_classes_norm = [str(x) for x in (prior_classes or []) if str(x).strip()]
+    same_class = bool(set(target_classes_norm) & set(prior_classes_norm))
+    has_trade_link = any(
+        frozenset({a, b}) in ECONOMIC_LINKS for a in target_classes_norm for b in prior_classes_norm
+    )
+
+    def build_target_tokens() -> set[str]:
+        tokens: set[str] = set()
+        for text in [target_context.get("specific_product", ""), *(target_context.get("field_labels", []) or [])]:
+            tokens |= set(_tokenize(str(text or "")))
+        for meta in (target_context.get("code_meta", []) or []):
+            if not isinstance(meta, dict):
+                continue
+            tokens |= set(_tokenize(str(meta.get("name_ko", ""))))
+            tokens |= set(_tokenize(str(meta.get("name_en", ""))))
+            tokens |= set(_tokenize(str(meta.get("group", ""))))
+        return tokens
+
+    def build_prior_tokens() -> set[str]:
+        tokens: set[str] = set()
+        for raw in (prior_context.get("prior_designated_items", []) or []):
+            if not isinstance(raw, dict):
+                continue
+            tokens |= set(_tokenize(str(raw.get("prior_item_label", ""))))
+        tokens |= set(_tokenize(str(prior_context.get("reason_summary", ""))))
+        return tokens
+
+    target_tokens = build_target_tokens()
+    prior_tokens = build_prior_tokens()
+    overlap_tokens = target_tokens & prior_tokens
+    overlap_count = len(overlap_tokens)
+
+    class_fallback_keywords = {
+        "9": {
+            "software",
+            "downloadable",
+            "download",
+            "digital",
+            "media",
+            "recorded",
+            "file",
+            "files",
+            "application",
+            "app",
+            "ai",
+            "소프트웨어",
+            "프로그램",
+            "앱",
+            "어플",
+            "애플리케이션",
+            "디지털",
+            "미디어",
+            "파일",
+            "다운로드",
+        },
+        "25": {"의류", "신발", "모자", "apparel", "clothing", "footwear", "hat", "caps"},
+        "30": {"커피", "차", "제과", "과자", "confectionery", "tea", "coffee", "bakery", "bread", "chocolate"},
+        "35": {"판매업", "소매업", "도매업", "온라인쇼핑몰업", "쇼핑몰업", "전자상거래업", "retail", "wholesale", "ecommerce"},
+        "41": {"교육", "training", "publishing", "entertainment", "강의", "출판", "오락", "콘텐츠"},
+        "42": {"saas", "paas", "cloud", "ai", "platform", "software", "design", "개발", "설계", "클라우드"},
+        "44": {"의료업", "병원", "clinic", "medical", "services", "beauty", "care", "의료", "클리닉", "미용"},
+    }
+    shared_classes = sorted(set(target_classes_norm) & set(prior_classes_norm))
+    keyword_union: set[str] = set()
+    for class_no in shared_classes:
+        keyword_union |= set(class_fallback_keywords.get(str(class_no), set()))
+    has_class_hint = bool(keyword_union and ((target_tokens | prior_tokens) & keyword_union))
+
+    class_floor_policies = {
+        "9": {"strong": 80, "near": 70, "weak": 55},
+        "25": {"strong": 78, "near": 68, "weak": 55},
+        "30": {"strong": 75, "near": 65, "weak": 55},
+        "35": {"strong": 70, "near": 62, "weak": 55},
+        "41": {"strong": 72, "near": 62, "weak": 55},
+        "42": {"strong": 80, "near": 70, "weak": 60},
+        "44": {"strong": 78, "near": 68, "weak": 60},
+    }
+    floor_policy = class_floor_policies.get(shared_classes[0], {"strong": 75, "near": 65, "weak": 55}) if shared_classes else {"strong": 70, "near": 60, "weak": 55}
+
+    overlap_type_override = ""
+    product_floor = 0
+    confusion_floor = 0
+
+    if same_class:
+        clear_proximity = overlap_count >= 2 or (overlap_count >= 1 and has_class_hint)
+        near_proximity = overlap_count >= 1 or has_class_hint
+        if clear_proximity:
+            product_floor = int(floor_policy["strong"])
+            overlap_type_override = "exact_same_mark_same_class"
+            confusion_floor = 95
+        elif near_proximity:
+            product_floor = int(floor_policy["near"] if overlap_count >= 1 else max(floor_policy["near"], floor_policy["weak"]))
+            overlap_type_override = "exact_same_mark_same_class_near_goods"
+            confusion_floor = 92
+        else:
+            product_floor = int(floor_policy["weak"])
+            overlap_type_override = "exact_same_mark_same_class_near_goods"
+            confusion_floor = 90
+    elif has_trade_link:
+        product_floor = 45
+        overlap_type_override = "exact_same_mark_cross_class_trade_link"
+        confusion_floor = 88
+    else:
+        product_bucket = _canonical_overlap_type(product_context.get("overlap_type", product_context.get("bucket", "")))
+        if product_bucket in {"exact_primary_overlap", "related_primary_overlap"}:
+            product_floor = max(55, int(product_context.get("score", 0) or 0))
+            overlap_type_override = "exact_same_mark_related_goods"
+            confusion_floor = 90
+
+    should_override = bool(overlap_type_override)
+    if not should_override:
+        return {
+            "is_exact_mark": True,
+            "should_override": False,
+            "override_reason": "",
+            "mark_similarity_floor": 0,
+            "confusion_floor": 0,
+            "overlap_type_override": "",
+            "product_similarity_floor": 0,
+        }
+
+    overlap_label = OVERLAP_TYPE_LABELS.get(overlap_type_override, overlap_type_override)
+    basis = _canonical_overlap_type(product_context.get("overlap_type", product_context.get("bucket", "")))
+    reason = (
+        f"정규화 기준 완전 동일표장이며 live 상태입니다. 상품/서비스 관련성은 '{overlap_label}'로 상향 평가합니다."
+        + (f" (기존 overlap={basis})" if basis else "")
+    )
+
+    return {
+        "is_exact_mark": True,
+        "should_override": True,
+        "override_reason": reason,
+        "mark_similarity_floor": 100,
+        "confusion_floor": int(confusion_floor),
+        "overlap_type_override": overlap_type_override,
+        "product_similarity_floor": int(product_floor),
+        "overlap_tokens": sorted(list(overlap_tokens))[:8],
+    }
+
+
 def _distinctiveness_analysis(
     trademark_name: str,
     is_coined: bool,
@@ -796,6 +1004,10 @@ def _overlap_weight(item: dict) -> float:
         # exact_primary_overlap: 대폭 상향하여 혼동 위험 즉시 반영
         "exact_primary_overlap": 2.5,
         "related_primary_overlap": 1.2,
+        "exact_same_mark_same_class": 2.2,
+        "exact_same_mark_same_class_near_goods": 1.7,
+        "exact_same_mark_related_goods": 1.2,
+        "exact_same_mark_cross_class_trade_link": 0.95,
         "retail_overlap_only": 0.22,
         "class35_direct_retail_link": 0.82,
         "class35_strong_trade_link": 0.62,
@@ -909,7 +1121,18 @@ def _confusion_metrics(item: dict) -> dict:
             confusion_score = max(confusion_score, 88)
 
     guardrail_reasons: list[str] = []
-    strong_overlap = bool(item.get("product_bucket") == "same_code" or overlap_type in {"exact_primary_overlap", "related_primary_overlap"})
+    strong_overlap = bool(
+        item.get("product_bucket") == "same_code"
+        or overlap_type
+        in {
+            "exact_primary_overlap",
+            "related_primary_overlap",
+            "exact_same_mark_same_class",
+            "exact_same_mark_same_class_near_goods",
+            "exact_same_mark_related_goods",
+            "exact_same_mark_cross_class_trade_link",
+        }
+    )
     weak_overlap = overlap_type in {
         "no_material_overlap",
         "retail_overlap_only",
@@ -939,6 +1162,13 @@ def _confusion_metrics(item: dict) -> dict:
         if confusion_score > cap:
             confusion_score = cap
             guardrail_reasons.append("appearance_product_low_cap")
+
+    exact_override = item.get("exact_override", {}) if isinstance(item.get("exact_override"), dict) else {}
+    if exact_override.get("should_override"):
+        floor = int(exact_override.get("confusion_floor", 0) or 0)
+        if floor:
+            confusion_score = max(confusion_score, floor)
+            guardrail_reasons.append("exact_mark_override_floor")
 
     if confusion_score >= 90:
         label = "매우 높음"
@@ -1056,6 +1286,17 @@ def _build_overlap_type_summary(included: list[dict], context: dict) -> list[str
     msgs = []
     selected_primary = context.get("selected_primary_codes", [])
     exact_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "exact_primary_overlap"]
+    exact_same_mark_items = [
+        item
+        for item in included
+        if _canonical_overlap_type(item.get("overlap_type"))
+        in {
+            "exact_same_mark_same_class",
+            "exact_same_mark_same_class_near_goods",
+            "exact_same_mark_related_goods",
+            "exact_same_mark_cross_class_trade_link",
+        }
+    ]
     related_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "related_primary_overlap"]
     retail_only_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "retail_overlap_only"]
     class35_direct_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "class35_direct_retail_link"]
@@ -1069,6 +1310,11 @@ def _build_overlap_type_summary(included: list[dict], context: dict) -> list[str
             f"기본 유사군코드 직접 일치 후보 {len(exact_items)}건 확인 "
             f"(선택 코드: {', '.join(selected_primary)}, 일치 코드: {codes_str or '검색 코드 기준'}). "
             f"실질 충돌 후보로 반영했습니다."
+        )
+    if exact_same_mark_items:
+        msgs.append(
+            f"완전 동일표장 기반 강한 충돌 후보 {len(exact_same_mark_items)}건은 "
+            "유사군코드 파싱 실패가 있더라도 동일표장 우선 원칙에 따라 강하게 반영했습니다."
         )
     if related_items:
         basis_items = [item for item in related_items if item.get("overlap_basis") == "retail_with_base_goods_overlap"]
@@ -1103,7 +1349,7 @@ def _build_overlap_type_summary(included: list[dict], context: dict) -> list[str
             f"제35류 종합 유통/쇼핑몰 성격 후보 {len(class35_market_items)}건은 "
             "자동 거절이 아니라 보조 경고 수준으로만 반영했습니다."
         )
-    if same_class_only_items and not exact_items:
+    if same_class_only_items and not exact_items and not exact_same_mark_items:
         msgs.append(
             f"동일 니스류 보조 검토군 {len(same_class_only_items)}건은 "
             f"유사군코드 직접 일치가 없어 약한 가중치만 적용했습니다. "
@@ -1180,6 +1426,42 @@ def _calibrate_score(
     phonetic_similarity = int(strongest.get("phonetic_similarity", 0)) if strongest else 0
     confusion_score = int(strongest.get("confusion_score", 0)) if strongest else 0
     primary_match_count = int(strongest.get("primary_code_overlap_count", 0)) if strongest else 0
+
+    if strongest and strongest.get("mark_identity") == "exact" and strongest_type in {
+        "exact_same_mark_same_class",
+        "exact_same_mark_same_class_near_goods",
+        "exact_same_mark_related_goods",
+        "exact_same_mark_cross_class_trade_link",
+    }:
+        lower, upper = 10, 55
+        if strongest_type == "exact_same_mark_same_class":
+            lower, upper = 8, 28
+        elif strongest_type == "exact_same_mark_same_class_near_goods":
+            lower, upper = 10, 35
+        elif strongest_type == "exact_same_mark_related_goods":
+            lower, upper = 15, 50
+        elif strongest_type == "exact_same_mark_cross_class_trade_link":
+            lower, upper = 20, 55
+        calibrated = min(max(calibrated, lower), upper)
+        cap_info = {
+            "cap_reason": f"exact same mark override (type={strongest_type}, confusion={confusion_score}%)",
+            "stage2_cap_upper": upper,
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append("완전 동일표장이 확인되어 발음 유사도와 무관하게 상대적 거절사유 위험을 강하게 반영했습니다.")
+        explanations.append(
+            f"overlap 유형은 {OVERLAP_TYPE_LABELS.get(strongest_type, strongest_type)}로 평가하여 등록가능성을 {lower}~{upper} 구간으로 제한했습니다."
+        )
+        explanations.append(
+            f"상품 유사성 필터 통과 후보 {len(included)}건 중 최종 점수에 직접 반영한 실질 장애물은 {len(live_blockers)}건입니다."
+        )
+        if historical_references:
+            explanations.append(_build_reference_summary(historical_references))
+        if actual_risk_count:
+            explanations.append(f"실질 장애물 {len(live_blockers)}건 중 실제 충돌 위험 후보는 {actual_risk_count}건입니다.")
+        else:
+            explanations.append("실질 장애물 후보는 있으나 실제 충돌 위험도는 제한적으로 평가했습니다.")
+        return calibrated, explanations, cap_info
 
     if (
         strongest
@@ -1439,10 +1721,64 @@ def evaluate_registration(
 
     for item in normalized_priors:
         product = _product_similarity(item, context)
+        original_product_score = int(product.get("score", 0) or 0)
+        original_overlap_type = str(product.get("overlap_type", product.get("bucket", "")) or "").strip()
+        exact_override = detect_exact_mark_override(
+            target_mark=trademark_name,
+            prior_mark=item.get("trademarkName", ""),
+            prior_status=item.get("registerStatus", ""),
+            target_classes=context.get("classes", []),
+            prior_classes=item.get("classes", []),
+            target_context=context,
+            prior_context=item,
+            product_context=product,
+        )
+        if exact_override.get("should_override"):
+            overlap_type_override = str(exact_override.get("overlap_type_override", "") or "").strip()
+            product_floor = int(exact_override.get("product_similarity_floor", 0) or 0)
+            if overlap_type_override:
+                product = {
+                    **product,
+                    "overlap_type": overlap_type_override,
+                    "overlap_basis": "exact_mark_override",
+                    "label": OVERLAP_TYPE_LABELS.get(overlap_type_override, product.get("label", "")) or product.get("label", ""),
+                }
+            if product_floor:
+                product = {**product, "score": max(int(product.get("score", 0) or 0), product_floor)}
+            if overlap_type_override.startswith("exact_same_mark_same_class"):
+                product = {
+                    **product,
+                    "bucket": "same_class",
+                    "scope_bucket": "same_class_candidates",
+                    "scope_bucket_label": "동일 류",
+                    "include": True,
+                    "penalty_weight": max(float(product.get("penalty_weight", 0.0) or 0.0), 0.68),
+                }
+            else:
+                product = {
+                    **product,
+                    "include": True,
+                    "penalty_weight": max(float(product.get("penalty_weight", 0.0) or 0.0), 0.48),
+                }
+            base_reason = str(product.get("reason", "") or "").strip()
+            override_reason = str(exact_override.get("override_reason", "") or "").strip()
+            if override_reason:
+                product = {
+                    **product,
+                    "reason": (base_reason + " " + override_reason).strip() if base_reason else override_reason,
+                }
+            exact_override = {
+                **exact_override,
+                "original_overlap_type": original_overlap_type,
+                "final_overlap_type": str(product.get("overlap_type", product.get("bucket", "")) or "").strip(),
+                "original_product_similarity_score": int(original_product_score),
+                "adjusted_product_similarity_score": int(product.get("score", 0) or 0),
+            }
         payload = {
             **item,
             "product_bucket": product["bucket"],
             "overlap_type": product.get("overlap_type", product["bucket"]),
+            "overlap_type_original": original_overlap_type,
             "overlap_basis": product.get("overlap_basis", ""),
             "overlap_codes": product.get("overlap_codes", []),
             "primary_overlap_codes": product.get("primary_overlap_codes", []),
@@ -1460,9 +1796,11 @@ def evaluate_registration(
             "group_name": product["group"],
             "product_similarity_label": product["label"],
             "product_similarity_score": product["score"],
+            "product_similarity_score_original": original_product_score,
             "product_penalty_weight": product["penalty_weight"],
             "product_reason": product["reason"],
             "strict_same_code": product["strict_same_code"],
+            "exact_override": exact_override,
         }
         bucket_counts[product["bucket"]] += 1
         if not product["include"]:
@@ -1575,6 +1913,16 @@ def evaluate_registration(
             f"상위 후보 '{top['trademarkName']}'는 표장 유사도 {top['mark_similarity']}%, "
             f"상품 유사도 {top['product_similarity_score']}%, 상태 반영 후 혼동위험 {top['confusion_score']}%입니다."
         )
+        top_override = top.get("exact_override", {}) if isinstance(top.get("exact_override"), dict) else {}
+        if top_override.get("should_override"):
+            original_type = str(top_override.get("original_overlap_type", "") or "").strip()
+            final_type = str(top_override.get("final_overlap_type", top.get("overlap_type", "")) or "").strip()
+            original_score = int(top_override.get("original_product_similarity_score", top.get("product_similarity_score_original", 0)) or 0)
+            adjusted_score = int(top_override.get("adjusted_product_similarity_score", top.get("product_similarity_score", 0)) or 0)
+            reason = str(top_override.get("override_reason", "") or "").strip()
+            signals.append(f"exact override 적용: overlap {original_type} → {final_type} / 상품점수 {original_score} → {adjusted_score}")
+            if reason:
+                signals.append(f"exact override 사유: {reason}")
         signals.append(
             f"가장 강한 overlap 유형은 {OVERLAP_TYPE_LABELS.get(_canonical_overlap_type(top.get('overlap_type')), top.get('overlap_type', '-'))}"
             + (

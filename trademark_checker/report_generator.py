@@ -173,12 +173,32 @@ def _render_top_priors(pdf: KoreanPDF, width: float, payload: dict, top_prior: l
                 )
         risk = item.get("risk_path_analysis", {}) or {}
         phonetic = risk.get("phonetic_analysis", {}) or item.get("phonetic_analysis", {}) or {}
+        exact_override = item.get("exact_override", {}) if isinstance(item.get("exact_override"), dict) else {}
+        if exact_override.get("should_override"):
+            lines.append("배지: 완전 동일표장 | 정규화 기준 완전 일치 | exact override 적용")
+            lines.append("완전 동일표장입니다(대소문자/공백/기호 정규화 기준).")
+            original_type = str(exact_override.get("original_overlap_type", item.get("overlap_type_original", "")) or "").strip()
+            final_type = str(exact_override.get("final_overlap_type", item.get("overlap_type", "")) or "").strip()
+            original_score = int(exact_override.get("original_product_similarity_score", item.get("product_similarity_score_original", 0)) or 0)
+            adjusted_score = int(exact_override.get("adjusted_product_similarity_score", item.get("product_similarity_score", 0)) or 0)
+            if original_type and final_type:
+                lines.append(f"설명: item-level 정보 부족으로 {original_type}였으나, 동일표장 우선 원칙으로 {final_type}로 상향했습니다.")
+            if original_score or adjusted_score:
+                lines.append(f"설명: 지정상품/서비스 텍스트 근접도 기반으로 상품점수 {original_score} → {adjusted_score}로 보정했습니다.")
+            lines.append("발음 분석은 보조 설명이며 최종 위험도를 낮추는 근거로 사용하지 않습니다.")
         if phonetic:
             best_score = phonetic.get("best_path_score", phonetic.get("phonetic_similarity", 0))
             best_label = phonetic.get("best_path_label", "")
             hangul = phonetic.get("hangul_pronunciation_similarity", 0)
             breakdown = risk.get("risk_paths", []) or []
-            lines.append(f"발음 유사도 {phonetic.get('phonetic_similarity', 0)}% | 최고 경로 {best_score}% {best_label} | 한글 호칭 {hangul}%")
+            if exact_override.get("should_override"):
+                lines.append(
+                    f"참고(발음): 유사도 {phonetic.get('phonetic_similarity', 0)}% | 최고 경로 {best_score}% {best_label} | 한글 호칭 {hangul}%"
+                )
+            else:
+                lines.append(
+                    f"발음 유사도 {phonetic.get('phonetic_similarity', 0)}% | 최고 경로 {best_score}% {best_label} | 한글 호칭 {hangul}%"
+                )
             hangul_onset = int(phonetic.get("onset_similarity", 0) or 0)
             hangul_vowel = int(phonetic.get("vowel_similarity", 0) or 0)
             hangul_coda = int(phonetic.get("coda_similarity", 0) or 0)

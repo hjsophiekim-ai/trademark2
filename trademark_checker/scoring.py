@@ -673,7 +673,7 @@ def detect_exact_mark_override(
     confusion_floor = 0
 
     if same_class:
-        clear_proximity = overlap_count >= 2 or (overlap_count >= 1 and has_class_hint)
+        clear_proximity = overlap_count >= 2 or has_class_hint
         near_proximity = overlap_count >= 1 or has_class_hint
         if clear_proximity:
             product_floor = int(floor_policy["strong"])
@@ -1435,9 +1435,9 @@ def _calibrate_score(
     }:
         lower, upper = 10, 55
         if strongest_type == "exact_same_mark_same_class":
-            lower, upper = 8, 28
+            lower, upper = 8, 20
         elif strongest_type == "exact_same_mark_same_class_near_goods":
-            lower, upper = 10, 35
+            lower, upper = 10, 28
         elif strongest_type == "exact_same_mark_related_goods":
             lower, upper = 15, 50
         elif strongest_type == "exact_same_mark_cross_class_trade_link":

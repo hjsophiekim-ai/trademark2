@@ -19,6 +19,23 @@ from collections import OrderedDict
 from pathlib import Path
 
 import requests
+try:
+    from .phonetic_rules import (
+        generate_phonetic_variants,
+        roman_mark_to_korean_pronunciation_candidates,
+        roman_mark_to_korean_pronunciations,
+    )
+except ImportError:
+    from phonetic_rules import (
+        generate_phonetic_variants,
+        roman_mark_to_korean_pronunciation_candidates,
+        roman_mark_to_korean_pronunciations,
+    )
+
+try:
+    from .phonetic_config import get_query_config
+except ImportError:
+    from phonetic_config import get_query_config
 
 try:
     from .similarity_code_db import get_class_for_code
@@ -120,24 +137,102 @@ def _normalize_class_no(value: str | int | None) -> str:
 def _search_mode_for_query_mode(query_mode: str) -> str:
     if query_mode in {"class_only", "same_class_fallback"}:
         return "class"
-    if query_mode in {"primary_sc_only", "primary_sc", "related_sc_only", "retail_sc_only"}:
+    if query_mode in {"primary_sc_only", "primary_sc", "related_sc_only", "retail_sc_only", "related_sc", "retail_sc"}:
         return "sc"
     return "mixed"
 
 
 def dedupe_search_candidates(items: list[dict]) -> list[dict]:
-    seen: set[tuple[str, str, str]] = set()
-    deduped: list[dict] = []
+    merged: dict[tuple[str, str, str], dict] = {}
     for item in items:
         app_no = str(item.get("applicationNumber", "")).strip()
         reg_no = str(item.get("registrationNumber", "")).strip()
         name = _normalize_name_key(item.get("trademarkName", ""))
         key = (app_no, reg_no, name)
-        if key in seen:
+        current = merged.get(key)
+        if current is None:
+            merged[key] = item
             continue
-        seen.add(key)
-        deduped.append(item)
-    return deduped
+        codes = set(current.get("queried_codes", []))
+        codes.update(item.get("queried_codes", []))
+        current["queried_codes"] = sorted(codes)
+
+        sources = list(current.get("hit_sources", []) or [])
+        for src in list(item.get("hit_sources", []) or []):
+            if not isinstance(src, dict):
+                continue
+            if src in sources:
+                continue
+            sources.append(src)
+        if sources:
+            current["hit_sources"] = sources
+
+        existing_designated = current.get("prior_designated_items", [])
+        incoming_designated = item.get("prior_designated_items", [])
+        if isinstance(incoming_designated, list) and len(incoming_designated) > len(existing_designated or []):
+            current["prior_designated_items"] = incoming_designated
+        if item.get("detail_sc_codes") and not current.get("detail_sc_codes"):
+            current["detail_sc_codes"] = item.get("detail_sc_codes")
+        if item.get("detail_parse_error") and not current.get("detail_parse_error"):
+            current["detail_parse_error"] = True
+    return list(merged.values())
+
+
+def build_phonetic_query_terms(mark: str, selected_classes: list[str] | list[int] | None = None, max_terms: int = 12) -> list[dict]:
+    del selected_classes
+    qcfg = get_query_config()
+    min_weight = float(qcfg.get("min_variant_weight", 0.68))
+    korean_weight = float(qcfg.get("korean_pronunciation_weight", 0.78))
+    min_korean_weight = float(qcfg.get("min_korean_pronunciation_weight", 0.50))
+    if max_terms == 12:
+        max_terms = int(qcfg.get("max_terms", 12) or 12)
+
+    variants = generate_phonetic_variants(mark, max_variants=48)
+    terms: list[dict] = []
+    for row in variants:
+        term = str(row.get("variant", "")).strip()
+        if not term:
+            continue
+        weight = float(row.get("path_score", 0)) / 100.0
+        if weight < min_weight:
+            continue
+        terms.append(
+            {
+                "term": term,
+                "query_reason": str(row.get("path_type", "phonetic_variant")),
+                "query_weight": round(weight, 4),
+                "path": row.get("path", []),
+            }
+        )
+
+    for row in roman_mark_to_korean_pronunciation_candidates(mark):
+        ko = str(row.get("pronunciation", "")).strip()
+        if not ko:
+            continue
+        cand_w = float(row.get("weight", 0.0) or 0.0)
+        q_weight = float(korean_weight) * max(0.0, min(1.0, cand_w))
+        if q_weight < min_korean_weight:
+            continue
+        query_reason = "korean_pronunciation" if cand_w >= 0.85 else "korean_pronunciation_variant"
+        terms.append(
+            {
+                "term": ko,
+                "query_reason": query_reason,
+                "query_weight": round(q_weight, 4),
+                "path": ["roman->hangul", *list(row.get("path", []) or [])],
+            }
+        )
+
+    deduped: dict[str, dict] = {}
+    for term in terms:
+        key = str(term.get("term", "")).strip().upper()
+        if not key:
+            continue
+        existing = deduped.get(key)
+        if existing is None or float(term.get("query_weight", 0.0)) > float(existing.get("query_weight", 0.0)):
+            deduped[key] = term
+    ranked = sorted(deduped.values(), key=lambda t: (-float(t.get("query_weight", 0.0)), len(str(t.get("term", "")))))
+    return ranked[:max_terms]
 
 
 def _parse_similarity_codes_from_html(html: str) -> list[str]:
@@ -563,6 +658,10 @@ def build_kipris_search_plan(
     related_codes: list[str] | None = None,
     retail_codes: list[str] | None = None,
 ) -> list[dict]:
+    qcfg = get_query_config()
+    max_terms = int(qcfg.get("max_terms", 12) or 12)
+    min_class_weight = float(qcfg.get("min_class_variant_weight", 0.76))
+
     classes = [_normalize_class_no(value) for value in selected_classes]
     classes = [value for value in classes if value]
     primary_codes = _dedupe_strings([_normalize_similarity_code(value) for value in primary_codes if value])
@@ -572,40 +671,10 @@ def build_kipris_search_plan(
     if not classes:
         classes = [""]
 
-    query_terms = _derive_query_terms(trademark_name)
+    query_terms = build_phonetic_query_terms(trademark_name, selected_classes=[str(v) for v in classes if v], max_terms=max_terms)
     plan: list[dict] = []
 
-    # Query A: TN + class (class 기반 recall)
-    for class_no in classes:
-        plan.append(
-            {
-                "query_mode": "class_only",
-                "search_mode": "class",
-                "word": trademark_name,
-                "class_no": class_no,
-                "codes": [],
-                "label": QUERY_MODE_LABELS["class_only"],
-                "search_formula": f"({trademark_name}) * ({class_no or '-'})",
-                "max_pages": 3,
-            }
-        )
-
-    # Query B: TN + primary SC (same class 밖 후보 회수 핵심)
-    for code in primary_codes:
-        plan.append(
-            {
-                "query_mode": "primary_sc_only",
-                "search_mode": "sc",
-                "word": trademark_name,
-                "class_no": "",
-                "codes": [code],
-                "label": QUERY_MODE_LABELS["primary_sc_only"],
-                "search_formula": f"({trademark_name}) * ({code})",
-                "max_pages": 3,
-            }
-        )
-
-    # Query C: TN + class + primary SC
+    # Query 1: TN + class + primary SC
     for class_no in classes:
         for code in primary_codes:
             plan.append(
@@ -616,12 +685,58 @@ def build_kipris_search_plan(
                     "class_no": class_no,
                     "codes": [code],
                     "label": QUERY_MODE_LABELS["primary_sc"],
-                    "search_formula": f"({trademark_name}) * ({class_no or '-'}) * ({code})",
+                    "search_formula": f"TN={trademark_name} AND CLASS={class_no or '-'} AND SC={code}",
                     "max_pages": 3,
                 }
             )
 
-    # Query D: TN + related SC
+    # Query 2: TN + class
+    for class_no in classes:
+        if not class_no:
+            continue
+        plan.append(
+            {
+                "query_mode": "class_only",
+                "search_mode": "class",
+                "word": trademark_name,
+                "class_no": class_no,
+                "codes": [],
+                "label": QUERY_MODE_LABELS["class_only"],
+                "search_formula": f"TN={trademark_name} AND CLASS={class_no}",
+                "max_pages": 3,
+            }
+        )
+
+    # Query 3: TN + related SC
+    for code in related_codes:
+        plan.append(
+            {
+                "query_mode": "related_sc",
+                "search_mode": "sc",
+                "word": trademark_name,
+                "class_no": "",
+                "codes": [code],
+                "label": QUERY_MODE_LABELS.get("related_sc_only", "TN + related SC"),
+                "search_formula": f"TN={trademark_name} AND SC={code}",
+                "max_pages": 2,
+            }
+        )
+
+    # Query 4: TN + retail SC
+    for code in retail_codes:
+        plan.append(
+            {
+                "query_mode": "retail_sc",
+                "search_mode": "sc",
+                "word": trademark_name,
+                "class_no": "",
+                "codes": [code],
+                "label": QUERY_MODE_LABELS.get("retail_sc_only", "TN + retail SC"),
+                "search_formula": f"TN={trademark_name} AND SC={code}",
+                "max_pages": 2,
+            }
+        )
+
     for code in related_codes:
         plan.append(
             {
@@ -630,13 +745,11 @@ def build_kipris_search_plan(
                 "word": trademark_name,
                 "class_no": "",
                 "codes": [code],
-                "label": QUERY_MODE_LABELS["related_sc_only"],
-                "search_formula": f"({trademark_name}) * ({code})",
+                "label": QUERY_MODE_LABELS.get("related_sc_only", "TN + related SC"),
+                "search_formula": f"TN={trademark_name} AND SC={code}",
                 "max_pages": 2,
             }
         )
-
-    # Query E: TN + retail SC
     for code in retail_codes:
         plan.append(
             {
@@ -645,27 +758,30 @@ def build_kipris_search_plan(
                 "word": trademark_name,
                 "class_no": "",
                 "codes": [code],
-                "label": QUERY_MODE_LABELS["retail_sc_only"],
-                "search_formula": f"({trademark_name}) * ({code})",
+                "label": QUERY_MODE_LABELS.get("retail_sc_only", "TN + retail SC"),
+                "search_formula": f"TN={trademark_name} AND SC={code}",
                 "max_pages": 2,
             }
         )
 
-    # Query F: TN only fallback
-    plan.append(
-        {
-            "query_mode": "text_fallback",
-            "search_mode": "mixed",
-            "word": trademark_name,
-            "class_no": "",
-            "codes": [],
-            "label": QUERY_MODE_LABELS["text_fallback"],
-            "search_formula": f"({trademark_name})",
-            "max_pages": 3,
-        }
-    )
+    for code in primary_codes:
+        plan.append(
+            {
+                "query_mode": "primary_sc_only",
+                "search_mode": "sc",
+                "word": trademark_name,
+                "class_no": "",
+                "codes": [code],
+                "label": QUERY_MODE_LABELS.get("primary_sc_only", "TN + primary SC"),
+                "search_formula": f"TN={trademark_name} AND SC={code}",
+                "max_pages": 3,
+            }
+        )
 
-    for term in query_terms:
+    for entry in query_terms:
+        term = str(entry.get("term", "")).strip()
+        if not term:
+            continue
         if term.upper() == str(trademark_name or "").strip().upper():
             continue
         plan.append(
@@ -676,12 +792,17 @@ def build_kipris_search_plan(
                 "class_no": "",
                 "codes": [],
                 "label": QUERY_MODE_LABELS["phonetic_text_fallback"],
-                "search_formula": f"({term})",
-                "max_pages": 2,
+                "search_formula": f"TN={term}",
+                "max_pages": 1 if float(entry.get("query_weight", 0.0)) < 0.8 else 2,
+                "query_reason": entry.get("query_reason", ""),
+                "query_weight": entry.get("query_weight", 0.0),
+                "query_path": entry.get("path", []),
             }
         )
         for class_no in classes:
             if not class_no:
+                continue
+            if float(entry.get("query_weight", 0.0)) < min_class_weight:
                 continue
             plan.append(
                 {
@@ -691,10 +812,26 @@ def build_kipris_search_plan(
                     "class_no": class_no,
                     "codes": [],
                     "label": QUERY_MODE_LABELS["phonetic_class_fallback"],
-                    "search_formula": f"({term}) * ({class_no})",
-                    "max_pages": 2,
+                    "search_formula": f"TN={term} AND CLASS={class_no}",
+                    "max_pages": 1,
+                    "query_reason": entry.get("query_reason", ""),
+                    "query_weight": entry.get("query_weight", 0.0),
+                    "query_path": entry.get("path", []),
                 }
             )
+
+    plan.append(
+        {
+            "query_mode": "text_fallback",
+            "search_mode": "mixed",
+            "word": trademark_name,
+            "class_no": "",
+            "codes": [],
+            "label": QUERY_MODE_LABELS["text_fallback"],
+            "search_formula": f"TN={trademark_name}",
+            "max_pages": 3,
+        }
+    )
 
     return plan
 
@@ -835,7 +972,7 @@ def _mock_search(
         for item in items
     ]
     target_class = _normalize_class_no(class_no) or _class_from_goods_code(similar_goods_code)
-    if query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only"}:
+    if query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only", "related_sc", "retail_sc"}:
         target_class = ""
     if target_class:
         matched = [m for m in matched if target_class in m["classificationCode"].split(",")]
@@ -877,7 +1014,7 @@ def _build_search_expression(
     parts = [f"({text})"]
     if query_mode in {"class_only", "same_class_fallback"} and class_text:
         parts.append(f"({class_text})")
-    elif query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only"} and code:
+    elif query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only", "related_sc", "retail_sc"} and code:
         parts.append(f"({code})")
     elif query_mode == "primary_sc":
         if class_text:
@@ -914,7 +1051,7 @@ def _build_request_payload(
         "page": str(page_no),
     }
     # KIPRIS 상세검색 분류정보->유사군(SC) 경로를 최대한 재현하기 위한 필드 힌트
-    if query_mode in {"primary_sc_only", "primary_sc", "related_sc_only", "retail_sc_only"} and code:
+    if query_mode in {"primary_sc_only", "primary_sc", "related_sc_only", "retail_sc_only", "related_sc", "retail_sc"} and code:
         payload.update(
             {
                 "searchType": "detail",
@@ -979,7 +1116,7 @@ def search_trademark(
     target_class = _normalize_class_no(class_no) or (
         _class_from_goods_code(similar_goods_code) if similar_goods_code else ""
     )
-    if query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only"}:
+    if query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only", "related_sc", "retail_sc"}:
         target_class = ""
 
     cache_key = (
@@ -1106,13 +1243,16 @@ def search_all_pages(
     max_pages: int = 5,
     rows_per_page: int = 20,
     query_mode: str = "",
+    query_reason: str = "",
+    query_weight: float = 1.0,
+    query_path: list[str] | None = None,
 ) -> dict:
     all_items: list[dict] = []
     total_count = 0
     target_class = _normalize_class_no(class_no) or (
         _class_from_goods_code(similar_goods_code) if similar_goods_code else ""
     )
-    if query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only"}:
+    if query_mode in {"primary_sc_only", "related_sc_only", "retail_sc_only", "related_sc", "retail_sc"}:
         target_class = ""
     search_expression = _build_search_expression(
         word,
@@ -1142,6 +1282,15 @@ def search_all_pages(
         if not page_items:
             break
             
+        hit_source = {
+            "term": str(word or "").strip(),
+            "query_mode": query_mode,
+            "query_reason": str(query_reason or "").strip(),
+            "query_weight": float(query_weight or 0.0),
+            "query_path": list(query_path or []),
+            "query_class_no": target_class,
+            "query_code": str(similar_goods_code or "").strip().upper(),
+        }
         all_items.extend(
             [
                 {
@@ -1150,6 +1299,7 @@ def search_all_pages(
                     "query_mode": query_mode,
                     "query_class_no": target_class,
                     "search_expression": search_expression or word,
+                    "hit_sources": [hit_source],
                 }
                 for item in page_items
             ]
@@ -1164,6 +1314,20 @@ def search_all_pages(
     merged_candidates = len(all_items)
     deduped_items = dedupe_search_candidates(all_items)
     deduped_candidates = len(deduped_items)
+
+    for item in deduped_items:
+        if item.get("prior_designated_items"):
+            continue
+        designated_items = extract_prior_designated_items(item)
+        if not designated_items:
+            continue
+        item["prior_designated_items"] = designated_items
+        all_sc = set(item.get("queried_codes", []))
+        for d in designated_items:
+            for code in d.get("prior_similarity_codes", []):
+                if code:
+                    all_sc.add(code)
+        item["queried_codes"] = sorted(all_sc)
     
     # search_all_pages에서도 최종 상태를 집계하여 반환
     final_status = STATUS_SUCCESS_HITS if deduped_items else STATUS_SUCCESS_ZERO

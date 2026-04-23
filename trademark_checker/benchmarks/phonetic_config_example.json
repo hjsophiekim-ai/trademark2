@@ -1,0 +1,14 @@
+{
+  "rule_weights": {
+    "sub_weak": 0.32,
+    "sub_medium": 0.22
+  },
+  "query": {
+    "max_terms": 12,
+    "min_variant_weight": 0.68,
+    "min_class_variant_weight": 0.76,
+    "korean_pronunciation_weight": 0.78,
+    "min_korean_pronunciation_weight": 0.5
+  }
+}
+

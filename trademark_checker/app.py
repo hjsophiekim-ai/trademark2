@@ -123,6 +123,74 @@ def deduplicate_results(items: list[dict], trademark_name: str) -> list[dict]:
     return results
 
 
+def _hit_source_type(hit: dict) -> str:
+    mode = str(hit.get("query_mode", "") or "").strip()
+    reason = str(hit.get("query_reason", "") or "").strip()
+    if "korean_pronunciation" in reason:
+        return "korean_pronunciation_variant" if "variant" in reason else "korean_pronunciation"
+    if reason.startswith("consonant_swap") or "consonant" in reason:
+        return "consonant_group_variant"
+    if reason in {"vowel_group", "vowel_ending", "silent_e"} or "vowel" in reason:
+        return "vowel_group_variant"
+    if mode.startswith("phonetic_") or reason:
+        return "phonetic_variant"
+    return "exact_text"
+
+
+def _safe_inline_text(value: object) -> str:
+    text = strip_html(str(value or ""))
+    return text.replace("<", " ").replace(">", " ").replace("\n", " ").strip()
+
+
+def _format_hit_sources_brief(hit_sources: list[dict], limit: int = 3) -> str:
+    rows = []
+    for hit in (hit_sources or []):
+        if not isinstance(hit, dict):
+            continue
+        term = _safe_inline_text(hit.get("term", ""))
+        if not term:
+            continue
+        rows.append(
+            {
+                "type": _hit_source_type(hit),
+                "term": term,
+                "w": float(hit.get("query_weight", 0.0) or 0.0),
+                "path": [str(x) for x in (hit.get("query_path", []) or []) if str(x or "").strip()],
+            }
+        )
+    if not rows:
+        return "-"
+    rows.sort(key=lambda r: (-r["w"], len(r["term"])))
+    parts = []
+    for r in rows[:limit]:
+        path = " / ".join(r["path"][:3]) if r["path"] else "-"
+        parts.append(f'{r["type"]} | {r["term"]} | w={r["w"]:.2f} | path={path}')
+    return " ; ".join(parts)
+
+
+def _build_hit_source_rows(item: dict) -> list[dict]:
+    rows = []
+    for hit in (item.get("hit_sources", []) or []):
+        if not isinstance(hit, dict):
+            continue
+        rows.append(
+            {
+                "상표명": strip_html(item.get("trademarkName", "")),
+                "출원번호": str(item.get("applicationNumber", "")),
+                "hit_source": _hit_source_type(hit),
+                "term": _safe_inline_text(hit.get("term", "")),
+                "query_weight": float(hit.get("query_weight", 0.0) or 0.0),
+                "query_mode": str(hit.get("query_mode", "")),
+                "query_reason": str(hit.get("query_reason", "")),
+                "query_path": " / ".join([str(x) for x in (hit.get("query_path", []) or []) if str(x or "").strip()][:6]) or "-",
+                "class_no": str(hit.get("query_class_no", "")),
+                "code": str(hit.get("query_code", "")),
+            }
+        )
+    rows.sort(key=lambda r: (-float(r.get("query_weight", 0.0) or 0.0), r.get("hit_source", ""), r.get("term", "")))
+    return rows
+
+
 def field_key(field: dict) -> str:
     return field.get("field_id", f'{field.get("class_no", "")}|{field.get("description", "")}')
 
@@ -2125,6 +2193,9 @@ elif st.session_state.step == 4:
                         max_pages=step.get("max_pages", 3),
                         rows_per_page=20,
                         query_mode=step.get("query_mode", ""),
+                        query_reason=step.get("query_reason", ""),
+                        query_weight=step.get("query_weight", 1.0),
+                        query_path=step.get("query_path", []) or [],
                     )
                     
                     search_status = result.get("search_status", "unknown")
@@ -2147,6 +2218,9 @@ elif st.session_state.step == 4:
                         {
                             "query_mode": step.get("query_mode", ""),
                             "search_mode": step.get("search_mode", result.get("search_mode", "mixed")),
+                            "query_reason": step.get("query_reason", ""),
+                            "query_weight": step.get("query_weight", 1.0),
+                            "query_path": step.get("query_path", []) or [],
                             "word": query_word,
                             "class_no": step.get("class_no", ""),
                             "code": code,
@@ -2474,6 +2548,11 @@ elif st.session_state.step == 4:
 
         if results:
             st.markdown("### 주요 선행상표 목록")
+            debug_hits = st.checkbox(
+                "디버그 모드: 선행상표가 어떤 검색 경로로 발견됐는지 보기",
+                value=False,
+                key=f"debug_hit_sources_{field_index}",
+            )
             for index, item in enumerate(results[:10]):
                 confusion_score = item.get("confusion_score", 0)
                 if confusion_score >= 75:
@@ -2500,7 +2579,8 @@ elif st.session_state.step == 4:
                                 <small>상태: {item.get('status_normalized', item['registerStatus'])} | 생존성 분류: {item.get('survival_label', '-')} | 류: {item['classificationCode']}</small><br>
                                 <small>출원인: {item['applicantName']} | 점수 반영 여부: {item.get('score_reflection_label', '-')}</small><br>
                                 <small>상품군 판단: {item.get('product_similarity_label', '-')} | {item.get('product_reason', '-')}</small><br>
-                                <small>표장 동일성: {item.get('mark_identity_label', '-')}</small>
+                                <small>표장 동일성: {item.get('mark_identity_label', '-')}</small><br>
+                                <small>검색 경로: {_format_hit_sources_brief(item.get('hit_sources', []) or [], limit=3)}</small>
                             </td>
                             <td style="width:40%; text-align:right; vertical-align:top;">
                                 <b style="font-size:20px;">혼동 위험 {confusion_score}%</b><br>
@@ -2544,12 +2624,23 @@ elif st.session_state.step == 4:
                         "점수반영": row.get("score_reflection_label", "-"),
                         "류": row["classificationCode"],
                         "출원인": row["applicantName"],
+                        "검색경로": _format_hit_sources_brief(row.get("hit_sources", []) or [], limit=2),
                     }
                     for row in results[:10]
                 ]
             )
             styled_df = result_df.style.map(similarity_cell_style, subset=["혼동위험", "표장유사도"])
             st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+            if debug_hits:
+                hit_rows = []
+                for row in (results[:10] + excluded_results[:10]):
+                    hit_rows.extend(_build_hit_source_rows(row))
+                if hit_rows:
+                    st.markdown("### 검색 근거(디버그)")
+                    st.dataframe(pd.DataFrame(hit_rows), use_container_width=True, hide_index=True)
+                else:
+                    st.info("표시할 검색 근거(hit_sources)가 없습니다.")
         else:
             st.markdown(
                 """

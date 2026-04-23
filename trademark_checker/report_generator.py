@@ -129,6 +129,20 @@ def _render_top_priors(pdf: KoreanPDF, width: float, payload: dict, top_prior: l
     selected_primary_codes = payload.get("selected_primary_codes", payload.get("overlap_type_analysis", {}).get("selected_primary_codes", []))
     for index, item in enumerate(top_prior, start=1):
         item = {**item, "selected_primary_codes": selected_primary_codes}
+
+        def hit_source_type(hit: dict) -> str:
+            mode = str(hit.get("query_mode", "") or "").strip()
+            reason = str(hit.get("query_reason", "") or "").strip()
+            if "korean_pronunciation" in reason:
+                return "korean_pronunciation_variant" if "variant" in reason else "korean_pronunciation"
+            if reason.startswith("consonant_swap") or "consonant" in reason:
+                return "consonant_group_variant"
+            if reason in {"vowel_group", "vowel_ending", "silent_e"} or "vowel" in reason:
+                return "vowel_group_variant"
+            if mode.startswith("phonetic_") or reason:
+                return "phonetic_variant"
+            return "exact_text"
+
         lines = [
             (
                 f"{index}. {item.get('trademarkName', '-')} | 상태 {item.get('status_normalized', item.get('registerStatus', '-'))} "
@@ -144,6 +158,47 @@ def _render_top_priors(pdf: KoreanPDF, width: float, payload: dict, top_prior: l
             _overlap_line(item),
             f"상품 범위 판단: {item.get('product_reason', '-')}",
         ]
+        hit_sources = [src for src in (item.get("hit_sources", []) or []) if isinstance(src, dict)]
+        if hit_sources:
+            hit_sources.sort(key=lambda r: (-float(r.get("query_weight", 0.0) or 0.0), len(str(r.get("term", "")))))
+            top_hits = hit_sources[:3]
+            lines.append("검색 경로(발견 근거):")
+            for hit in top_hits:
+                term = str(hit.get("term", "") or "").strip() or "-"
+                q_weight = float(hit.get("query_weight", 0.0) or 0.0)
+                q_mode = str(hit.get("query_mode", "") or "").strip() or "-"
+                q_path = " / ".join([str(x) for x in (hit.get("query_path", []) or []) if str(x or "").strip()][:6]) or "-"
+                lines.append(
+                    f"- {hit_source_type(hit)} | term {term} | w {q_weight:.2f} | mode {q_mode} | path {q_path}"
+                )
+        risk = item.get("risk_path_analysis", {}) or {}
+        phonetic = risk.get("phonetic_analysis", {}) or item.get("phonetic_analysis", {}) or {}
+        if phonetic:
+            best_score = phonetic.get("best_path_score", phonetic.get("phonetic_similarity", 0))
+            best_label = phonetic.get("best_path_label", "")
+            hangul = phonetic.get("hangul_pronunciation_similarity", 0)
+            breakdown = risk.get("risk_paths", []) or []
+            lines.append(f"발음 유사도 {phonetic.get('phonetic_similarity', 0)}% | 최고 경로 {best_score}% {best_label} | 한글 호칭 {hangul}%")
+            hangul_onset = int(phonetic.get("onset_similarity", 0) or 0)
+            hangul_vowel = int(phonetic.get("vowel_similarity", 0) or 0)
+            hangul_coda = int(phonetic.get("coda_similarity", 0) or 0)
+            hangul_best_path = phonetic.get("hangul_best_path", []) or []
+            hangul_pair = phonetic.get("hangul_best_pair", {}) or {}
+            if int(hangul or 0) >= 70 and hangul_best_path and hangul_pair:
+                lines.append(f"한글 호칭 근거: {', '.join([str(x) for x in hangul_best_path[:3]])}")
+            if hangul_onset >= 80 and hangul_vowel < 70:
+                lines.append("설명: 초성은 유사하나 중성이 달라 호칭이 완전히 동일하다고 보긴 어렵습니다.")
+            elif hangul_vowel >= 85 and hangul_coda < 70:
+                lines.append("설명: 중성까지 유사하고 종성에서 약화/차이가 발생합니다.")
+            elif int(hangul or 0) >= 85 and (hangul_pair.get("source_origin") == "roman" or hangul_pair.get("target_origin") == "roman"):
+                sp = hangul_pair.get("source_pronunciation", "")
+                tp = hangul_pair.get("target_pronunciation", "")
+                if sp and tp:
+                    lines.append(f"설명: 영문 음역 시 한국어 호칭이 거의 동일합니다({sp} ↔ {tp}).")
+            for row in breakdown[:3]:
+                lines.append(
+                    f"- {row.get('path_label', '-')}: 발음 {row.get('path_score', 0)}% / 혼동 {row.get('path_confusion', 0)}% ({row.get('registration_outlook', '-')})"
+                )
         _write_lines(pdf, width, lines)
         refusal = item.get("refusal_analysis", {})
         if refusal.get("reason_summary"):

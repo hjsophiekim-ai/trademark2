@@ -8,6 +8,7 @@ from typing import Iterable, List
 
 try:
     from .goods_scope import classify_product_similarity, normalize_selected_input
+    from .phonetic_rules import analyze_phonetic_similarity
     from .legal_scope import (
         NON_DISTINCTIVE_WORDS,
         SCOPE_GROUP_LABELS,
@@ -22,6 +23,7 @@ try:
     from .similarity_code_db import get_code_metadata
 except ImportError:
     from goods_scope import classify_product_similarity, normalize_selected_input
+    from phonetic_rules import analyze_phonetic_similarity
     from legal_scope import (
         NON_DISTINCTIVE_WORDS,
         SCOPE_GROUP_LABELS,
@@ -344,29 +346,108 @@ def _roman_phonetic_key(text: str) -> str:
 
 
 def _phonetic_similarity_percent(source: str, target: str) -> int:
-    left = _compact(source).upper()
-    right = _compact(target).upper()
-    if not left or not right:
-        return 0
-    base = similarity_percent(source, target)
-    if left == right:
-        return 100
-    left_key = _roman_phonetic_key(left)
-    right_key = _roman_phonetic_key(right)
-    if left_key and right_key:
-        key_ratio = SequenceMatcher(None, left_key, right_key).ratio()
-        key_score = int(round(key_ratio * 100))
-        base = max(base, key_score)
-        if left_key == right_key:
-            return max(base, 92)
-        if left_key[:3] == right_key[:3]:
-            return max(base, 86)
+    analysis = analyze_phonetic_similarity(source, target, max_paths=12)
+    return int(analysis.get("phonetic_similarity", 0) or 0)
 
-    if _phonetic_similar(left, right):
-        return max(base, 84)
-    if left[:2] == right[:2]:
-        return max(base, 72)
-    return base
+
+def _path_label_kr(path: list[str]) -> str:
+    if not path:
+        return "동일"
+    labels = []
+    for step in path:
+        step = str(step or "").strip()
+        if not step:
+            continue
+        if step == "IE->Y":
+            labels.append("종결 모음 치환(IE→Y)")
+            continue
+        if step == "EE->Y":
+            labels.append("종결 모음 치환(EE→Y)")
+            continue
+        if step == "Y->I":
+            labels.append("종결 모음 치환(Y→I)")
+            continue
+        if step == "E->∅":
+            labels.append("무음 E 제거")
+            continue
+        if step in {"OO->U", "OU->U"}:
+            labels.append("모음군 치환(OO/OU→U)")
+            continue
+        if step.startswith("P->B") or step.startswith("B->P"):
+            labels.append("약한 유사 자음(P↔B)")
+            continue
+        if step.startswith("K->G") or step.startswith("G->K"):
+            labels.append("약한 유사 자음(K↔G)")
+            continue
+        if step.startswith("T->D") or step.startswith("D->T"):
+            labels.append("약한 유사 자음(T↔D)")
+            continue
+        if step.startswith("P->F") or step.startswith("F->P"):
+            labels.append("중간 유사 자음(P↔F)")
+            continue
+        if step.startswith("R->L") or step.startswith("L->R"):
+            labels.append("중간 유사 자음(R↔L)")
+            continue
+        if step == "roman->hangul":
+            labels.append("한국어식 호칭 변환")
+            continue
+        labels.append(step.replace("->", "→"))
+    return " + ".join(labels[:3]) if labels else "발음 변형"
+
+
+def analyze_candidate_risk_paths(target_mark: str, prior_mark: str, overlap_context: dict, status_context: dict) -> dict:
+    analysis = analyze_phonetic_similarity(target_mark, prior_mark, max_paths=12)
+    breakdown = list(analysis.get("path_breakdown", []) or [])
+    appearance = int(overlap_context.get("appearance_similarity", 0) or 0)
+    conceptual = int(overlap_context.get("conceptual_similarity", 0) or 0)
+    product_score = int(overlap_context.get("product_similarity_score", 0) or 0)
+    trademark_type = str(overlap_context.get("trademark_type", "문자만"))
+    overlap_type = _canonical_overlap_type(overlap_context.get("overlap_type", overlap_context.get("product_bucket", "")))
+    counts_live = bool(status_context.get("counts_toward_final_score"))
+    status_weight = float(status_context.get("status_confusion_weight", 0.0) or 0.0)
+
+    risk_paths = []
+    for entry in breakdown[:3]:
+        path = list(entry.get("path", []) or [])
+        path_score = int(entry.get("score", 0) or 0)
+        mark_similarity = _mark_similarity(appearance, path_score, conceptual, trademark_type)
+        base_confusion = int(round(mark_similarity * 0.62 + product_score * 0.38))
+        if counts_live:
+            confusion = int(round(base_confusion * (0.84 + status_weight * 0.16)))
+        else:
+            confusion = int(round(base_confusion * (0.48 + status_weight * 0.22)))
+        confusion = max(0, min(100, confusion))
+        if overlap_type in {
+            "no_material_overlap",
+            "retail_overlap_only",
+            "class35_general_market_link",
+            "class35_weak_business_support",
+            "class35_no_material_link",
+            "same_class_only",
+        }:
+            if product_score < 55 and appearance < 55 and path_score >= 85:
+                cap = 60 if overlap_type in {"no_material_overlap", "class35_no_material_link"} else 65
+                confusion = min(confusion, cap)
+            elif product_score < 60 and appearance < 45 and path_score >= 80:
+                confusion = min(confusion, 58)
+            elif product_score < 50 and path_score >= 90:
+                confusion = min(confusion, 70)
+        outlook = "참고"
+        if confusion >= 85:
+            outlook = "매우 위험"
+        elif confusion >= 75:
+            outlook = "위험"
+        elif confusion >= 60:
+            outlook = "주의"
+        risk_paths.append(
+            {
+                "path_label": _path_label_kr(path),
+                "path_score": path_score,
+                "path_confusion": confusion,
+                "registration_outlook": outlook,
+            }
+        )
+    return {"candidate_final_confusion": int(analysis.get("phonetic_similarity", 0) or 0), "risk_paths": risk_paths, "phonetic_analysis": analysis}
 
 
 def _concept_similarity_percent(source: str, target: str) -> int:
@@ -755,19 +836,24 @@ def _enrich_mark_similarity(item: dict, trademark_name: str, trademark_type: str
     if item.get("mark_identity") == "exact":
         appearance = 100
         phonetic = 100
+        phonetic_analysis = analyze_phonetic_similarity(trademark_name, item["trademarkName"], max_paths=12)
         conceptual = 100
         mark_similarity = 100
     else:
         appearance = item["similarity"]
-        phonetic = _phonetic_similarity_percent(trademark_name, item["trademarkName"])
+        phonetic_analysis = analyze_phonetic_similarity(trademark_name, item["trademarkName"], max_paths=12)
+        phonetic = int(phonetic_analysis.get("phonetic_similarity", 0) or 0)
         conceptual = _concept_similarity_percent(trademark_name, item["trademarkName"])
         mark_similarity = _mark_similarity(appearance, phonetic, conceptual, trademark_type)
     return {
         **item,
+        "target_trademark_name": trademark_name,
+        "target_trademark_type": trademark_type,
         "appearance_similarity": appearance,
         "phonetic_similarity": phonetic,
         "conceptual_similarity": conceptual,
         "mark_similarity": mark_similarity,
+        "phonetic_analysis": phonetic_analysis,
         "mark_identity_label": "완전 동일" if item.get("mark_identity") == "exact" else "유사",
     }
 
@@ -816,10 +902,43 @@ def _confusion_metrics(item: dict) -> dict:
 
     overlap_type = _canonical_overlap_type(item.get("overlap_type", item.get("product_bucket", "excluded")))
     phonetic = int(item.get("phonetic_similarity", 0) or 0)
-    if overlap_type == "same_class_only" and item.get("counts_toward_final_score") and phonetic >= 92:
+    appearance = int(item.get("appearance_similarity", item.get("similarity", 0)) or 0)
+    if overlap_type == "same_class_only" and item.get("counts_toward_final_score") and phonetic >= 92 and appearance >= 60:
         confusion_score = max(confusion_score, 80)
-        if phonetic >= 98:
+        if phonetic >= 98 and appearance >= 70:
             confusion_score = max(confusion_score, 88)
+
+    guardrail_reasons: list[str] = []
+    strong_overlap = bool(item.get("product_bucket") == "same_code" or overlap_type in {"exact_primary_overlap", "related_primary_overlap"})
+    weak_overlap = overlap_type in {
+        "no_material_overlap",
+        "retail_overlap_only",
+        "class35_general_market_link",
+        "class35_weak_business_support",
+        "class35_no_material_link",
+        "same_class_only",
+    }
+    if not strong_overlap and weak_overlap:
+        if product_score < 55 and appearance < 55 and phonetic >= 85:
+            cap = 60 if overlap_type in {"no_material_overlap", "class35_no_material_link"} else 65
+            if confusion_score > cap:
+                confusion_score = cap
+                guardrail_reasons.append("weak_overlap_phonetic_cap")
+        elif product_score < 60 and appearance < 45 and phonetic >= 80:
+            cap = 58
+            if confusion_score > cap:
+                confusion_score = cap
+                guardrail_reasons.append("low_appearance_phonetic_cap")
+        elif product_score < 50 and phonetic >= 90:
+            cap = 70
+            if confusion_score > cap:
+                confusion_score = cap
+                guardrail_reasons.append("non_same_code_no_phonetic_only_spike")
+    if not strong_overlap and product_score < 55 and appearance < 55 and mark_score < 70 and phonetic >= 88:
+        cap = 65
+        if confusion_score > cap:
+            confusion_score = cap
+            guardrail_reasons.append("appearance_product_low_cap")
 
     if confusion_score >= 90:
         label = "매우 높음"
@@ -836,6 +955,22 @@ def _confusion_metrics(item: dict) -> dict:
         "confusion_score": max(0, min(100, confusion_score)),
         "confusion_label": label,
         "score_reflection_label": _score_reflection_note(item),
+        "confusion_guardrail_reasons": guardrail_reasons,
+        "risk_path_analysis": analyze_candidate_risk_paths(
+            target_mark=item.get("target_trademark_name", ""),
+            prior_mark=item.get("trademarkName", ""),
+            overlap_context={
+                "appearance_similarity": item.get("appearance_similarity", 0),
+                "conceptual_similarity": item.get("conceptual_similarity", 0),
+                "product_similarity_score": item.get("product_similarity_score", 0),
+                "trademark_type": item.get("target_trademark_type", "문자만"),
+                "overlap_type": overlap_type,
+            },
+            status_context={
+                "counts_toward_final_score": item.get("counts_toward_final_score", False),
+                "status_confusion_weight": item.get("status_confusion_weight", 0.0),
+            },
+        ),
     }
 
 
@@ -1157,18 +1292,18 @@ def _calibrate_score(
     elif strongest_type == "same_class_only":
         lower, upper = 60, 75
         # 심각한 오류 해결: confusion_score가 높으면 same_class_only라도 캡을 강제로 낮춤
-        if phonetic_similarity >= 92 and confusion_score >= 80:
+        if phonetic_similarity >= 92 and confusion_score >= 80 and strongest_basis == "same_class_context":
             lower, upper = 8, 22
             explanations.append(
                 f"동일 류에서 발음 유사도가 매우 높고(발음 {phonetic_similarity}%, 혼동위험 {confusion_score}%), "
                 "상대적 거절사유 관점에서 등록 가능성을 8~22 구간으로 강하게 제한했습니다."
             )
-        elif confusion_score >= 50:
+        elif phonetic_similarity >= 92 and confusion_score >= 50:
             lower, upper = 30, 50
             explanations.append(
                 f"표장 혼동위험({confusion_score}%)이 매우 높아 동일 니스류 내의 다른 유사군이라도 등록 가능성을 30~50 구간으로 대폭 제한했습니다."
             )
-        elif confusion_score >= 40:
+        elif phonetic_similarity >= 92 and confusion_score >= 40:
             lower, upper = 50, 65
             explanations.append(
                 f"표장 혼동위험({confusion_score}%)이 상당하여 same-class-only 구간을 50~65로 하향 조정했습니다."

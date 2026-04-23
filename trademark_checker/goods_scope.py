@@ -33,8 +33,89 @@ OVERLAP_LABELS = {
     "exact_primary_overlap": "기본 유사군코드 직접 일치",
     "related_primary_overlap": "근접 유사군코드 충돌",
     "retail_overlap_only": "판매업 코드만 일치",
+    "class35_direct_retail_link": "제35류 직접 판매/유통 연계",
+    "class35_strong_trade_link": "제35류 강한 거래 연계",
+    "class35_general_market_link": "제35류 일반 유통 연계",
+    "class35_weak_business_support": "제35류 경영/광고 지원(약함)",
+    "class35_no_material_link": "제35류 무관",
     "same_class_only": "동일 류 보조 검토",
     "no_material_overlap": "실질 중첩 없음",
+}
+
+_CLASS35_RETAIL_HINTS = {
+    "소매",
+    "소매업",
+    "도매",
+    "도매업",
+    "도소매",
+    "도소매업",
+    "판매",
+    "판매업",
+    "판매대행",
+    "판매대행업",
+    "유통",
+    "유통업",
+    "온라인",
+    "온라인쇼핑몰",
+    "온라인쇼핑몰업",
+    "쇼핑몰",
+    "쇼핑몰업",
+    "전자상거래",
+    "전자상거래업",
+    "통신판매",
+    "통신판매업",
+    "오픈마켓",
+    "마켓",
+    "백화점",
+    "백화점업",
+    "종합소매",
+    "종합소매업",
+}
+_CLASS35_GENERAL_MARKET_HINTS = {
+    "종합",
+    "종합쇼핑몰",
+    "종합쇼핑몰업",
+    "온라인종합쇼핑몰",
+    "온라인종합쇼핑몰업",
+    "종합온라인쇼핑몰",
+    "종합온라인쇼핑몰업",
+    "플랫폼",
+    "플랫폼업",
+}
+_CLASS35_BUSINESS_SUPPORT_HINTS = {
+    "광고",
+    "광고업",
+    "광고대행",
+    "광고대행업",
+    "마케팅",
+    "마케팅업",
+    "홍보",
+    "홍보업",
+    "판촉",
+    "판촉업",
+    "경영",
+    "경영업",
+    "경영자문",
+    "경영자문업",
+    "사업관리",
+    "사업관리업",
+    "사무",
+    "사무처리",
+    "사무처리업",
+    "컨설팅",
+    "자문",
+    "대행",
+}
+_CLASS35_STOPWORDS = {
+    "업",
+    "서비스",
+    "서비스업",
+    "도매업",
+    "소매업",
+    "판매업",
+    "온라인",
+    "전자상거래업",
+    "쇼핑몰업",
 }
 
 
@@ -507,6 +588,10 @@ def _candidate_rank(payload: dict) -> tuple[int, int, int, int]:
     type_rank = {
         "exact_primary_overlap": 5,
         "related_primary_overlap": 4,
+        "class35_direct_retail_link": 4,
+        "class35_strong_trade_link": 3,
+        "class35_general_market_link": 2,
+        "class35_weak_business_support": 1,
         "retail_overlap_only": 2,
         "same_class_only": 1,
         "no_material_overlap": 0,
@@ -517,6 +602,112 @@ def _candidate_rank(payload: dict) -> tuple[int, int, int, int]:
         payload.get("related_code_overlap_count", 0),
         _confidence_rank(payload.get("overlap_confidence", "none")),
     )
+
+
+def assess_class35_conflict_with_target(
+    target_mark: str,
+    target_kind: str | None,
+    target_classes: list[int],
+    target_primary_codes: list[str],
+    target_related_codes: list[str],
+    target_retail_codes: list[str],
+    prior_item: dict,
+    prior_designated_items: list[dict],
+    context_tokens: set[str],
+) -> dict:
+    item_classes = [int(value) for value in prior_item.get("classes", []) if str(value).strip()]
+    if 35 not in item_classes:
+        return {"applies": False}
+
+    similarity_hint = int(prior_item.get("similarity", 0) or 0)
+    mark_identity = prior_item.get("mark_identity", "similar")
+    if mark_identity != "exact" and similarity_hint < 80:
+        return {"applies": False}
+
+    target_main_classes = [int(value) for value in target_classes if int(value) != 35]
+    if not target_main_classes:
+        target_main_classes = [int(value) for value in target_classes]
+
+    class35_items = [
+        item for item in prior_designated_items if str(item.get("prior_class_no", "")).strip() == "35"
+    ]
+    class35_text = " ".join(str(item.get("prior_item_label", "")).strip() for item in class35_items if item.get("prior_item_label"))
+    if not class35_text:
+        class35_text = str(prior_item.get("trademarkName", "")).strip()
+
+    raw_tokens = {token for token in _tokenize(class35_text) if len(token) >= 2}
+    tokens = {token for token in raw_tokens if token not in _CLASS35_STOPWORDS}
+
+    has_retail_hint = any(hint in class35_text for hint in _CLASS35_RETAIL_HINTS) or any(hint in tokens for hint in _CLASS35_RETAIL_HINTS)
+    has_general_market = any(hint in class35_text for hint in _CLASS35_GENERAL_MARKET_HINTS) or any(hint in tokens for hint in _CLASS35_GENERAL_MARKET_HINTS)
+    has_support_hint = any(hint in class35_text for hint in _CLASS35_BUSINESS_SUPPORT_HINTS) or any(hint in tokens for hint in _CLASS35_BUSINESS_SUPPORT_HINTS)
+
+    if has_support_hint and not (has_retail_hint or has_general_market):
+        return {"applies": False, "relation_level": "weak", "conflict_weight": 0.05, "should_cap": False}
+
+    target_tokens = set(context_tokens)
+    for code in [*target_primary_codes, *target_related_codes, *target_retail_codes]:
+        target_tokens.update(_item_code_tokens(code))
+    target_tokens = {token for token in target_tokens if token not in _CLASS35_STOPWORDS}
+
+    overlap_tokens = sorted(tokens & target_tokens)
+    overlap_count = len(overlap_tokens)
+
+    if has_retail_hint:
+        if mark_identity == "exact" and overlap_count >= 1:
+            return {
+                "applies": True,
+                "relation_level": "very_strong",
+                "relation_reason": f"제35류 지정서비스가 출원 대상과 직접 연결됩니다(겹침: {', '.join(overlap_tokens[:3])}).",
+                "conflict_weight": 1.0,
+                "should_cap": True,
+                "cap_upper": 55,
+                "explanation": "제35류 선등록상표가 출원상품/서비스의 직접 판매·유통과 연계됩니다.",
+            }
+        if overlap_count >= 2:
+            return {
+                "applies": True,
+                "relation_level": "strong",
+                "relation_reason": f"제35류 유통/판매 서비스가 출원 대상과 강하게 연계됩니다(겹침: {', '.join(overlap_tokens[:3])}).",
+                "conflict_weight": 0.85,
+                "should_cap": True,
+                "cap_upper": 65,
+                "explanation": "제35류 선등록상표가 같은 산업 내 유통 서비스로 보입니다.",
+            }
+        if has_general_market:
+            return {
+                "applies": True,
+                "relation_level": "medium",
+                "relation_reason": "제35류가 종합 유통/마켓 성격으로 거래상 출처 오인 가능성이 일부 있습니다.",
+                "conflict_weight": 0.4,
+                "should_cap": False,
+                "cap_upper": 80,
+                "explanation": "제35류 종합 유통 서비스는 자동 거절이 아니라 보조 경고로만 반영합니다.",
+            }
+
+    if has_general_market and mark_identity == "exact":
+        return {
+            "applies": True,
+            "relation_level": "medium",
+            "relation_reason": "제35류 종합쇼핑몰/플랫폼 성격으로 출처 오인 가능성이 일부 있습니다.",
+            "conflict_weight": 0.35,
+            "should_cap": False,
+            "cap_upper": 80,
+            "explanation": "제35류 종합 유통 서비스는 자동 거절이 아니라 보조 경고로만 반영합니다.",
+        }
+
+    if mark_identity == "exact" and target_kind == "services" and any(cls in {42, 43} for cls in target_main_classes) and has_retail_hint:
+        return {
+            "applies": True,
+            "relation_level": "medium",
+            "relation_reason": "제35류가 소프트웨어/플랫폼 유통과 연결될 수 있어 보조 경고로 평가했습니다.",
+            "conflict_weight": 0.45,
+            "should_cap": False,
+            "cap_upper": 80,
+            "explanation": "서비스류 출원에서도 제35류 유통 성격이 강하면 일부 위험 신호로 반영합니다.",
+        }
+
+    return {"applies": False, "relation_level": "none", "conflict_weight": 0.0, "should_cap": False}
 
 
 def classify_product_similarity(item: dict, context: dict) -> dict:
@@ -537,6 +728,41 @@ def classify_product_similarity(item: dict, context: dict) -> dict:
     selected_codes = context["selected_similarity_codes"]
     selected_kind = context.get("selected_kind")
     item_classes = [int(value) for value in item.get("classes", []) if str(value).strip()]
+    class35_conflict = assess_class35_conflict_with_target(
+        target_mark=context.get("trademark_name", ""),
+        target_kind=selected_kind,
+        target_classes=selected_classes,
+        target_primary_codes=context.get("selected_primary_codes", []),
+        target_related_codes=context.get("selected_related_codes", []),
+        target_retail_codes=context.get("selected_retail_codes", []),
+        prior_item=item,
+        prior_designated_items=designated_items,
+        context_tokens=context.get("tokens", set()),
+    )
+    if class35_conflict.get("applies"):
+        relation_level = class35_conflict.get("relation_level", "medium")
+        overlap_type = {
+            "very_strong": "class35_direct_retail_link",
+            "strong": "class35_strong_trade_link",
+            "medium": "class35_general_market_link",
+            "weak": "class35_weak_business_support",
+            "none": "class35_no_material_link",
+        }.get(str(relation_level), "class35_general_market_link")
+        penalty = float(class35_conflict.get("conflict_weight", 0.25))
+        include = overlap_type not in {"class35_no_material_link", "class35_weak_business_support"}
+        return _build_overlap_payload(
+            bucket="exception",
+            scope_bucket="related_market_candidates",
+            overlap_type=overlap_type,
+            overlap_basis="class35_conflict",
+            score=40 if overlap_type == "class35_direct_retail_link" else 32 if overlap_type == "class35_strong_trade_link" else 18,
+            penalty_weight=penalty,
+            include=include,
+            reason=str(class35_conflict.get("relation_reason", class35_conflict.get("explanation", ""))).strip()
+            or "제35류 지정서비스와 출원 대상의 거래상 관련성을 보조 검토했습니다.",
+            confidence="medium" if overlap_type in {"class35_direct_retail_link", "class35_strong_trade_link"} else "low",
+        )
+
     shared_classes = [value for value in item_classes if value in selected_classes]
     item_kind = infer_kind_from_classes(item_classes)
     item_explicit_code = str(item.get("similarityGroupCode", "") or "").strip().upper()

@@ -70,6 +70,11 @@ OVERLAP_TYPE_ALIASES = {
     "related_primary_code_overlap": "related_primary_overlap",
     "retail_code_with_goods_overlap": "related_primary_overlap",
     "retail_code_overlap_only": "retail_overlap_only",
+    "class35_direct_retail_link": "class35_direct_retail_link",
+    "class35_strong_trade_link": "class35_strong_trade_link",
+    "class35_general_market_link": "class35_general_market_link",
+    "class35_weak_business_support": "class35_weak_business_support",
+    "class35_no_material_link": "class35_no_material_link",
     "same_class_with_context": "same_class_only",
     "same_class_only": "same_class_only",
     "cross_kind_exception": "no_material_overlap",
@@ -82,12 +87,22 @@ OVERLAP_TYPE_LABELS = {
     "exact_primary_overlap": "기본 유사군코드 직접 일치",
     "related_primary_overlap": "근접 유사군코드 또는 기초상품 연계 충돌",
     "retail_overlap_only": "판매업 코드만 일치",
+    "class35_direct_retail_link": "제35류 직접 판매/유통 연계",
+    "class35_strong_trade_link": "제35류 강한 거래 연계",
+    "class35_general_market_link": "제35류 일반 유통 연계",
+    "class35_weak_business_support": "제35류 경영/광고 지원(약함)",
+    "class35_no_material_link": "제35류 무관",
     "same_class_only": "동일 류 보조 검토",
     "no_material_overlap": "실질 중첩 없음",
 }
 OVERLAP_TYPE_RANKS = {
     "exact_primary_overlap": 5,
     "related_primary_overlap": 4,
+    "class35_direct_retail_link": 4,
+    "class35_strong_trade_link": 3,
+    "class35_general_market_link": 2,
+    "class35_weak_business_support": 1,
+    "class35_no_material_link": 0,
     "retail_overlap_only": 2,
     "same_class_only": 1,
     "no_material_overlap": 0,
@@ -701,6 +716,11 @@ def _overlap_weight(item: dict) -> float:
         "exact_primary_overlap": 2.5,
         "related_primary_overlap": 1.2,
         "retail_overlap_only": 0.22,
+        "class35_direct_retail_link": 0.82,
+        "class35_strong_trade_link": 0.62,
+        "class35_general_market_link": 0.28,
+        "class35_weak_business_support": 0.08,
+        "class35_no_material_link": 0.0,
         "same_class_only": 0.18,
         "no_material_overlap": 0.1 if overlap_basis == "cross_kind_exception" else 0.0,
     }
@@ -903,6 +923,9 @@ def _build_overlap_type_summary(included: list[dict], context: dict) -> list[str
     exact_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "exact_primary_overlap"]
     related_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "related_primary_overlap"]
     retail_only_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "retail_overlap_only"]
+    class35_direct_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "class35_direct_retail_link"]
+    class35_strong_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "class35_strong_trade_link"]
+    class35_market_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "class35_general_market_link"]
     same_class_only_items = [item for item in included if _canonical_overlap_type(item.get("overlap_type")) == "same_class_only"]
 
     if exact_items:
@@ -929,6 +952,21 @@ def _build_overlap_type_summary(included: list[dict], context: dict) -> list[str
             f"판매업 코드(S20xx)만 겹치는 후보 {len(retail_only_items)}건은 "
             f"기초 상품군이 달라 자동 유사 처리를 하지 않았습니다. "
             f"판매업 코드 동일 ≠ 상품 유사임을 유의하세요."
+        )
+    if class35_direct_items:
+        msgs.append(
+            f"제35류에서 출원상품/서비스의 직접 판매·유통과 연결되는 후보 {len(class35_direct_items)}건은 "
+            "거래상 출처 오인 가능성이 높아 강하게 반영했습니다."
+        )
+    if class35_strong_items:
+        msgs.append(
+            f"제35류 유통 서비스가 같은 산업 내 핵심 유통으로 보이는 후보 {len(class35_strong_items)}건은 "
+            "강한 거래상 관련성 신호로 반영했습니다."
+        )
+    if class35_market_items:
+        msgs.append(
+            f"제35류 종합 유통/쇼핑몰 성격 후보 {len(class35_market_items)}건은 "
+            "자동 거절이 아니라 보조 경고 수준으로만 반영했습니다."
         )
     if same_class_only_items and not exact_items:
         msgs.append(
@@ -1008,7 +1046,19 @@ def _calibrate_score(
     confusion_score = int(strongest.get("confusion_score", 0)) if strongest else 0
     primary_match_count = int(strongest.get("primary_code_overlap_count", 0)) if strongest else 0
 
-    if strongest and strongest.get("mark_identity") == "exact" and confusion_score >= 80:
+    if (
+        strongest
+        and strongest.get("mark_identity") == "exact"
+        and confusion_score >= 80
+        and strongest_type
+        not in {
+            "class35_direct_retail_link",
+            "class35_strong_trade_link",
+            "class35_general_market_link",
+            "class35_weak_business_support",
+            "class35_no_material_link",
+        }
+    ):
         upper = 18
         lower = 5
         calibrated = min(max(calibrated, lower), upper)
@@ -1066,6 +1116,44 @@ def _calibrate_score(
             "직접 일치는 아니지만 근접 코드군 또는 기초상품 연계가 확인되어 "
             "related overlap 위험대로 35~50 구간 중심으로 보정했습니다."
         )
+    elif strongest_type == "class35_direct_retail_link":
+        lower, upper = 35, 55
+        if mark_similarity >= 85 or confusion_score >= 80:
+            lower, upper = 25, 45
+        calibrated = min(max(calibrated, lower), upper)
+        cap_info = {
+            "cap_reason": "class35 direct retail link",
+            "stage2_cap_upper": upper,
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append(
+            "제35류 선등록상표의 지정서비스가 출원상품/서비스의 직접 판매·유통과 연결되어 거래상 출처 혼동 가능성이 높습니다."
+        )
+    elif strongest_type == "class35_strong_trade_link":
+        lower, upper = 40, 65
+        if mark_similarity >= 85 or confusion_score >= 75:
+            lower, upper = 35, 60
+        calibrated = min(max(calibrated, lower), upper)
+        cap_info = {
+            "cap_reason": "class35 strong trade link",
+            "stage2_cap_upper": upper,
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append(
+            "제35류 선등록상표가 같은 산업 내 유통/판매 서비스로 확인되어 거래상 관련성이 강한 편입니다."
+        )
+    elif strongest_type == "class35_general_market_link":
+        if strongest.get("mark_identity") == "exact" and mark_similarity >= 75:
+            lower, upper = 60, 80
+            calibrated = min(max(calibrated, lower), upper)
+            cap_info = {
+                "cap_reason": "class35 general market link",
+                "stage2_cap_upper": upper,
+                "cap_applied_overlap_type": strongest_type,
+            }
+            explanations.append(
+                "제35류 종합 유통/쇼핑몰 성격은 자동 거절 사유가 아니므로 보조 경고 수준으로만 제한했습니다."
+            )
     elif strongest_type == "same_class_only":
         lower, upper = 60, 75
         # 심각한 오류 해결: confusion_score가 높으면 same_class_only라도 캡을 강제로 낮춤

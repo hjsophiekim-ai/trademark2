@@ -12,12 +12,16 @@ def _eval_case(case: dict, disable_exact_override: bool) -> dict:
     from scoring import evaluate_registration
 
     old_value = os.getenv("TRADEMARK_DISABLE_EXACT_OVERRIDE")
+    old_pressure = os.getenv("TRADEMARK_DISABLE_BLOCKER_PRESSURE")
     try:
         if disable_exact_override:
             os.environ["TRADEMARK_DISABLE_EXACT_OVERRIDE"] = "1"
+            os.environ["TRADEMARK_DISABLE_BLOCKER_PRESSURE"] = "1"
         else:
             if "TRADEMARK_DISABLE_EXACT_OVERRIDE" in os.environ:
                 del os.environ["TRADEMARK_DISABLE_EXACT_OVERRIDE"]
+            if "TRADEMARK_DISABLE_BLOCKER_PRESSURE" in os.environ:
+                del os.environ["TRADEMARK_DISABLE_BLOCKER_PRESSURE"]
 
         report = evaluate_registration(
             trademark_name=case["trademark_name"],
@@ -35,6 +39,11 @@ def _eval_case(case: dict, disable_exact_override: bool) -> dict:
                 del os.environ["TRADEMARK_DISABLE_EXACT_OVERRIDE"]
         else:
             os.environ["TRADEMARK_DISABLE_EXACT_OVERRIDE"] = old_value
+        if old_pressure is None:
+            if "TRADEMARK_DISABLE_BLOCKER_PRESSURE" in os.environ:
+                del os.environ["TRADEMARK_DISABLE_BLOCKER_PRESSURE"]
+        else:
+            os.environ["TRADEMARK_DISABLE_BLOCKER_PRESSURE"] = old_pressure
 
     top = (report.get("top_prior") or [{}])[0] if report else {}
     exact_override = top.get("exact_override", {}) if isinstance(top.get("exact_override"), dict) else {}
@@ -77,6 +86,14 @@ def _is_expected_satisfied(expected: str, post: dict) -> bool:
             and int(post.get("confusion_score", 0) or 0) >= 60
             and int(post.get("score", 100) or 100) <= 68
         )
+    if expected == "should_be_low_due_to_blocker":
+        return (
+            int(post.get("score", 100) or 100) <= 50
+            and int(post.get("confusion_score", 0) or 0) >= 65
+            and int(post.get("mark_similarity", 0) or 0) >= 75
+        )
+    if expected == "should_be_high_when_clean":
+        return int(post.get("score", 0) or 0) >= 80
     return True
 
 

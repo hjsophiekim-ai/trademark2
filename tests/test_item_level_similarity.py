@@ -153,7 +153,7 @@ def test_direct_overlap_case_never_falls_back_to_same_class_band() -> None:
 def test_same_class_only_case_can_stay_in_60_to_75_band() -> None:
     result = _eval("부동산업", [36], ["S1212"], [_prior(designated_items=FINANCE_PRIOR_ITEMS)])
     assert result["strongest_overlap_type"] == "same_class_near_services"
-    assert 50 <= result["score"] <= 68
+    assert 30 <= result["score"] <= 68
 
 
 def test_g_tree_priority_order_is_legal_then_insurance_real_estate_then_finance() -> None:

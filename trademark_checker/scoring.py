@@ -1722,6 +1722,143 @@ def _build_reference_summary(historical_references: list[dict]) -> str:
         messages.append("거절 상표는 거절이유의 핵심이 현재 상표와 직접 관련되는 경우에만 보조 경고로 반영합니다.")
     return " ".join(messages)
 
+def _confusion_band_penalty(confusion_score: int) -> int:
+    c = int(confusion_score or 0)
+    if c < 30:
+        return 0
+    if c < 50:
+        return 4
+    if c < 65:
+        return 8
+    if c < 75:
+        return 14
+    if c < 85:
+        return 22
+    return 30
+
+
+def _evaluate_strongest_blocker_pressure(strongest: dict, live_blockers: list[dict]) -> dict:
+    if not strongest or not live_blockers:
+        return {
+            "has_strong_blocker": False,
+            "blocker_strength": "none",
+            "blocker_reason": "",
+            "raw_score_penalty": 0,
+            "score_ceiling": 0,
+            "components": {},
+        }
+
+    overlap_type = _canonical_overlap_type(str(strongest.get("overlap_type", "") or ""))
+    mark_similarity = int(strongest.get("mark_similarity", 0) or 0)
+    confusion_score = int(strongest.get("confusion_score", 0) or 0)
+    status = str(strongest.get("status_normalized", strongest.get("registerStatus", "")) or "")
+    is_registered = status == "등록"
+
+    dominant = strongest.get("dominant_mark_overlap", {}) if isinstance(strongest.get("dominant_mark_overlap"), dict) else {}
+    dominant_strength = str(dominant.get("dominant_overlap_strength", "") or "").strip()
+
+    strong_overlap_types = {
+        "exact_primary_overlap",
+        "related_primary_overlap",
+        "exact_same_mark_same_class",
+        "exact_same_mark_same_class_near_goods",
+        "exact_same_mark_related_goods",
+        "exact_same_mark_cross_class_trade_link",
+        "class35_direct_retail_link",
+        "class35_strong_trade_link",
+        "same_class_core_service_link",
+        "same_class_core_goods_link",
+    }
+    medium_overlap_types = {
+        "same_class_near_services",
+        "class35_general_market_link",
+    }
+
+    has_trigger = bool(
+        mark_similarity >= 75
+        and (
+            overlap_type in strong_overlap_types
+            or overlap_type in medium_overlap_types
+            or dominant_strength in {"strong", "medium"}
+        )
+    )
+    if not has_trigger:
+        return {
+            "has_strong_blocker": False,
+            "blocker_strength": "none",
+            "blocker_reason": "",
+            "raw_score_penalty": 0,
+            "score_ceiling": 0,
+            "components": {},
+        }
+
+    strength = "medium"
+    if overlap_type in strong_overlap_types and (confusion_score >= 75 or mark_similarity >= 85 or dominant_strength == "strong"):
+        strength = "very_strong"
+    elif overlap_type in strong_overlap_types and (confusion_score >= 65 or mark_similarity >= 80 or dominant_strength in {"strong", "medium"}):
+        strength = "strong"
+    elif overlap_type in medium_overlap_types and (confusion_score >= 70 or (is_registered and mark_similarity >= 80) or dominant_strength == "strong"):
+        strength = "strong"
+    elif overlap_type in medium_overlap_types:
+        strength = "medium"
+
+    base_live_penalty = 8
+    extra_blocker_penalty = min(10, max(0, len(live_blockers) - 1) * 2)
+    confusion_penalty = _confusion_band_penalty(confusion_score)
+
+    registered_penalty = 0
+    if is_registered and mark_similarity >= 80 and overlap_type in (strong_overlap_types | medium_overlap_types):
+        registered_penalty = 10 if confusion_score >= 65 else 8
+    elif is_registered and mark_similarity >= 75 and confusion_score >= 60:
+        registered_penalty = 6
+
+    dominant_penalty = 0
+    if dominant_strength == "strong":
+        dominant_penalty = 8 if is_registered and mark_similarity >= 80 else 6
+    elif dominant_strength == "medium":
+        dominant_penalty = 4
+
+    strength_penalty = {"medium": 10, "strong": 18, "very_strong": 26}.get(strength, 0)
+    total_penalty = min(
+        40,
+        int(base_live_penalty)
+        + int(extra_blocker_penalty)
+        + int(confusion_penalty)
+        + int(registered_penalty)
+        + int(dominant_penalty)
+        + int(strength_penalty),
+    )
+
+    ceiling = {"medium": 65, "strong": 55, "very_strong": 48}.get(strength, 0)
+    if overlap_type == "same_class_near_services" and is_registered and mark_similarity >= 80:
+        ceiling = min(ceiling or 100, 50 if confusion_score >= 65 else 58)
+    if overlap_type in {"same_class_core_service_link", "same_class_core_goods_link"} and is_registered and mark_similarity >= 80:
+        ceiling = min(ceiling or 100, 48 if confusion_score >= 70 else 50)
+    if dominant_strength == "strong" and is_registered and mark_similarity >= 80:
+        ceiling = min(ceiling or 100, 50)
+
+    label = OVERLAP_TYPE_LABELS.get(overlap_type, overlap_type)
+    blocker_reason = f"live 선행상표 1건이 강함(상태={status}, overlap={label}, 표장={mark_similarity}%, 혼동={confusion_score}%)"
+    if dominant_strength in {"strong", "medium"}:
+        blocker_reason = blocker_reason + f", 요부 공통({dominant_strength})"
+
+    return {
+        "has_strong_blocker": True,
+        "blocker_strength": strength,
+        "blocker_reason": blocker_reason,
+        "raw_score_penalty": int(total_penalty),
+        "score_ceiling": int(ceiling) if ceiling else 0,
+        "components": {
+            "base_live_penalty": int(base_live_penalty),
+            "extra_blocker_penalty": int(extra_blocker_penalty),
+            "confusion_penalty": int(confusion_penalty),
+            "registered_penalty": int(registered_penalty),
+            "dominant_penalty": int(dominant_penalty),
+            "strength_penalty": int(strength_penalty),
+        },
+    }
+
+
 def _calibrate_score(
     raw_score: int,
     included: list[dict],
@@ -1756,6 +1893,30 @@ def _calibrate_score(
     phonetic_similarity = int(strongest.get("phonetic_similarity", 0)) if strongest else 0
     confusion_score = int(strongest.get("confusion_score", 0)) if strongest else 0
     primary_match_count = int(strongest.get("primary_code_overlap_count", 0)) if strongest else 0
+    status = str(strongest.get("status_normalized", strongest.get("registerStatus", "")) or "") if strongest else ""
+    is_registered = status == "등록"
+    blocker_pressure = {}
+    if str(os.getenv("TRADEMARK_DISABLE_BLOCKER_PRESSURE", "") or "").strip() != "1":
+        blocker_pressure = _evaluate_strongest_blocker_pressure(strongest, live_blockers)
+        if blocker_pressure.get("has_strong_blocker"):
+            penalty = int(blocker_pressure.get("raw_score_penalty", 0) or 0)
+            ceiling = int(blocker_pressure.get("score_ceiling", 0) or 0)
+            calibrated = max(0, calibrated - penalty)
+            if ceiling:
+                calibrated = min(calibrated, ceiling)
+            explanations.append("강한 선행상표가 live 상태로 존재해 등록가능성을 크게 제한했습니다.")
+            explanations.append(
+                f"최강 장애물 우선 반영: {blocker_pressure.get('blocker_reason', '')} "
+                f"(raw penalty {penalty}, ceiling {ceiling or '-'})."
+            )
+            components = blocker_pressure.get("components", {}) if isinstance(blocker_pressure.get("components"), dict) else {}
+            if components:
+                explanations.append(
+                    "감점 구성: "
+                    + ", ".join(
+                        f"{k}={int(v)}" for k, v in components.items() if int(v or 0) > 0
+                    )
+                )
 
     if strongest and strongest.get("mark_identity") == "exact" and strongest_type in {
         "exact_same_mark_same_class",
@@ -1902,11 +2063,13 @@ def _calibrate_score(
                 "제35류 종합 유통/쇼핑몰 성격은 자동 거절 사유가 아니므로 보조 경고 수준으로만 제한했습니다."
             )
     elif strongest_type in {"same_class_core_service_link", "same_class_core_goods_link"}:
-        lower, upper = 40, 60
-        if mark_similarity >= 80 or confusion_score >= 78:
-            lower, upper = 35, 55
+        lower, upper = 20, 55
+        if is_registered and mark_similarity >= 80:
+            lower, upper = 15, 48 if confusion_score >= 70 else 50
+        elif mark_similarity >= 80 or confusion_score >= 78:
+            lower, upper = 15, 50
         elif mark_similarity >= 75 and confusion_score >= 72:
-            lower, upper = 40, 58
+            lower, upper = 18, 52
         calibrated = min(max(calibrated, lower), upper)
         cap_info = {
             "cap_reason": f"same class core link (confusion={confusion_score}%)",
@@ -1917,11 +2080,13 @@ def _calibrate_score(
             "동일 류 내 핵심 서비스/상품군으로 경제적 견련성이 강해 same-class-only보다 보수적으로 등록가능성을 제한했습니다."
         )
     elif strongest_type == "same_class_near_services":
-        lower, upper = 55, 68
+        lower, upper = 25, 58
         if confusion_score >= 75:
-            lower, upper = 45, 60
+            lower, upper = 15, 45
+        elif is_registered and mark_similarity >= 80 and confusion_score >= 65:
+            lower, upper = 18, 52
         elif confusion_score >= 65:
-            lower, upper = 50, 65
+            lower, upper = 18, 55
         calibrated = min(max(calibrated, lower), upper)
         cap_info = {
             "cap_reason": f"same class near services (confusion={confusion_score}%)",
@@ -1929,7 +2094,7 @@ def _calibrate_score(
             "cap_applied_overlap_type": strongest_type,
         }
         explanations.append(
-            "직접 유사군코드 일치는 없더라도 동일 류 내 근접 서비스업으로 경제적 견련성이 있어 등록가능성을 55~68 구간으로 제한했습니다."
+            "직접 유사군코드 일치는 없더라도 동일 류 내 근접 서비스업으로 경제적 견련성이 있어 등록가능성을 더 보수적으로 제한했습니다."
         )
     elif strongest_type == "same_class_only_weak":
         lower, upper = 62, 75

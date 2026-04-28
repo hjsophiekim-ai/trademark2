@@ -166,7 +166,7 @@ def build_cases() -> list[dict]:
             _case(
                 case_id=f"PHON_{a}_{b}",
                 category="high phonetic similarity only",
-                expected="should_be_medium_risk",
+                expected="should_remain_same_class_only",
                 trademark_name=a,
                 trademark_type="문자만",
                 is_coined=True,
@@ -347,7 +347,7 @@ def build_cases() -> list[dict]:
             _case(
                 case_id=f"PHON2_{a}_{b}",
                 category="high phonetic similarity only",
-                expected="should_be_medium_risk",
+                expected="should_remain_same_class_only",
                 trademark_name=a,
                 trademark_type="문자만",
                 is_coined=True,
@@ -450,6 +450,51 @@ def build_cases() -> list[dict]:
                     **common_live,
                 }
             ],
+        )
+    )
+    idx += 1
+
+    _add(
+        _case(
+            case_id="BLOCKER_GTREE_FINANCE_REGISTERED_INSURANCE_PRIOR",
+            category="high similarity live blocker",
+            expected="should_be_low_due_to_blocker",
+            trademark_name="G트리",
+            trademark_type="문자만",
+            is_coined=True,
+            selected_kind="services",
+            selected_classes=[36],
+            selected_codes=[],
+            specific_product="금융업",
+            prior_items=[
+                {
+                    "applicationNumber": f"{idx}",
+                    "trademarkName": "오렌G트리",
+                    "classificationCode": "36",
+                    "similarityGroupCode": "",
+                    "prior_designated_items": [
+                        {"prior_item_label": "보험업", "prior_class_no": "36", "prior_similarity_codes": []}
+                    ],
+                    **common_live,
+                }
+            ],
+        )
+    )
+    idx += 1
+
+    _add(
+        _case(
+            case_id="CLEAN_CASE_CLASS45_LEGAL_NO_PRIOR",
+            category="high baseline when clean",
+            expected="should_be_high_when_clean",
+            trademark_name="CLEANLAW",
+            trademark_type="문자만",
+            is_coined=True,
+            selected_kind="services",
+            selected_classes=[45],
+            selected_codes=[],
+            specific_product="법무서비스업",
+            prior_items=[],
         )
     )
     idx += 1

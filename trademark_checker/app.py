@@ -39,6 +39,7 @@ from report_generator import generate_report_pdf
 from scoring import evaluate_registration, get_score_band, similarity_percent, strip_html
 from search_mapper import get_category_suggestions
 from similarity_code_db import get_all_codes_by_class, get_similarity_codes
+from ui_priors import build_prior_user_view_model, safe_inline_text as _ui_safe_inline_text
 
 
 MAX_SELECTED_SUBGROUPS = 5
@@ -138,8 +139,7 @@ def _hit_source_type(hit: dict) -> str:
 
 
 def _safe_inline_text(value: object) -> str:
-    text = strip_html(str(value or ""))
-    return text.replace("<", " ").replace(">", " ").replace("\n", " ").strip()
+    return _ui_safe_inline_text(value)
 
 
 def _format_hit_sources_brief(hit_sources: list[dict], limit: int = 3) -> str:
@@ -211,6 +211,49 @@ def _build_hit_source_rows(item: dict) -> list[dict]:
         )
     rows.sort(key=lambda r: (-float(r.get("query_weight", 0.0) or 0.0), r.get("hit_source", ""), r.get("term", "")))
     return rows
+
+
+def render_prior_card_user(item: dict, rank: int) -> None:
+    model = build_prior_user_view_model(item, rank)
+    left, right = st.columns([3, 1], vertical_alignment="top")
+    with left:
+        st.markdown(f"**{model['rank']}. {model['trademark_name']}** · {model['risk_label']}")
+        st.caption(f"출원번호: {model['application_number']} | 출원일: {model['application_date']}")
+        st.caption(f"상태: {model['status']} | 류: {model['class_code']}")
+        st.caption(f"출원인: {model['applicant']}")
+        st.caption(f"상품군 판단: {model['product_summary']}")
+    with right:
+        st.metric("혼동위험", f"{model['confusion_score']}%")
+        m1, m2 = st.columns(2)
+        with m1:
+            st.metric("표장", f"{model['mark_similarity']}%")
+        with m2:
+            st.metric("상품/서비스", f"{model['product_similarity']}%")
+        if hasattr(st, "link_button"):
+            st.link_button("KIPRIS에서 보기", model["kipris_url"])
+        else:
+            st.markdown(f"[KIPRIS에서 보기]({model['kipris_url']})")
+
+
+def render_prior_card_debug(item: dict) -> None:
+    st.write("검색 경로(요약):", _format_hit_sources_brief(item.get("hit_sources", []) or [], limit=3))
+    badge = _format_exact_override_badges(item)
+    if badge:
+        st.write("배지:", badge)
+    detail = _format_exact_override_details(item)
+    if detail:
+        st.write("exact override 상세:", detail)
+    refusal = item.get("refusal_analysis", {})
+    if isinstance(refusal, dict):
+        if refusal.get("reason_summary"):
+            st.write(
+                "거절이유 요약:",
+                _safe_inline_text(refusal.get("reason_summary")),
+                f"(현재 상표 관련성: {_safe_inline_text(refusal.get('current_mark_relevance_label', '-'))})",
+            )
+        cited = refusal.get("cited_marks")
+        if cited:
+            st.write("인용상표:", ", ".join([_safe_inline_text(x) for x in (cited or []) if _safe_inline_text(x)]))
 
 
 def field_key(field: dict) -> str:
@@ -2552,109 +2595,53 @@ elif st.session_state.step == 4:
             st.markdown("- 상품 유사성 필터를 통과한 후보가 없어 표장 유사도는 강한 감점에 쓰지 않았습니다.")
 
         st.markdown("### 혼동 가능성 종합")
-        st.markdown(
-            f"""
-            <div class="card">
-                <b>{report.get('confusion_analysis', {}).get('summary', '-')}</b><br>
-                <small style="color:#546E7A;">
-                검색 출처: {report.get('search_source', '-')} |
-                실질 장애물 {report.get('direct_score_prior_count', 0)}건 /
-                역사적 참고자료 {report.get('historical_reference_count', 0)}건
-                </small>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        with st.container():
+            st.write(_safe_inline_text(report.get("confusion_analysis", {}).get("summary", "-")))
+            st.caption(
+                f"검색 출처: {_safe_inline_text(report.get('search_source', '-'))} | "
+                f"실질 장애물 {int(report.get('direct_score_prior_count', 0) or 0)}건 / "
+                f"역사적 참고자료 {int(report.get('historical_reference_count', 0) or 0)}건"
+            )
         if report.get("reference_summary"):
             st.markdown(f"- {report.get('reference_summary')}")
 
         if results:
             st.markdown("### 주요 선행상표 목록")
             debug_hits = st.checkbox(
-                "디버그 모드: 선행상표가 어떤 검색 경로로 발견됐는지 보기",
+                "고급 보기(디버그)",
                 value=False,
                 key=f"debug_hit_sources_{field_index}",
             )
-            for index, item in enumerate(results[:10]):
-                confusion_score = item.get("confusion_score", 0)
-                if confusion_score >= 75:
-                    card_class = "trademark-high"
-                    risk_label = "높은 위험"
-                    bar_color = "#F44336"
-                elif confusion_score >= 55:
-                    card_class = "trademark-medium"
-                    risk_label = "주의"
-                    bar_color = "#FF9800"
-                else:
-                    card_class = "trademark-low"
-                    risk_label = "낮은 위험"
-                    bar_color = "#4CAF50"
+            for index, item in enumerate(results[:10], start=1):
+                with st.container():
+                    render_prior_card_user(item, index)
+                    if debug_hits:
+                        with st.expander("디버그 상세", expanded=False):
+                            render_prior_card_debug(item)
+                    st.divider()
 
-                st.markdown(
-                    f"""
-                    <div class="{card_class}">
-                        <table style="width:100%; border:none;">
-                        <tr>
-                            <td style="width:60%">
-                                <b>{index + 1}. {item['trademarkName']}</b> &nbsp; {risk_label}<br>
-                                <small>출원번호: {item['applicationNumber']} | 출원일: {item['applicationDate']}</small><br>
-                                <small>상태: {item.get('status_normalized', item['registerStatus'])} | 생존성 분류: {item.get('survival_label', '-')} | 류: {item['classificationCode']}</small><br>
-                                <small>출원인: {item['applicantName']} | 점수 반영 여부: {item.get('score_reflection_label', '-')}</small><br>
-                                <small>상품군 판단: {item.get('product_similarity_label', '-')} | {item.get('product_reason', '-')}</small><br>
-                                <small>표장 동일성: {item.get('mark_identity_label', '-')}</small><br>
-                                {f"<small>배지: {_format_exact_override_badges(item)}</small><br>" if _format_exact_override_badges(item) else ""}
-                                {f"<small>exact override 상세: {_format_exact_override_details(item)}</small><br>" if _format_exact_override_details(item) else ""}
-                                {f"<small>참고: 완전 동일표장 사건에서는 발음 분석은 보조 설명이며 위험도를 낮추는 근거로 사용하지 않습니다.</small><br>" if (isinstance(item.get('exact_override'), dict) and item.get('exact_override', {}).get('should_override')) else ""}
-                                <small>검색 경로: {_format_hit_sources_brief(item.get('hit_sources', []) or [], limit=3)}</small>
-                            </td>
-                            <td style="width:40%; text-align:right; vertical-align:top;">
-                                <b style="font-size:20px;">혼동 위험 {confusion_score}%</b><br>
-                                <small>표장 {item.get('mark_similarity', 0)}% / 상품 {item.get('product_similarity_score', 0)}%</small><br>
-                                <div style="background:#ddd; border-radius:4px; height:8px; margin-top:4px;">
-                                    <div style="background:{bar_color}; width:{confusion_score}%; height:8px; border-radius:4px;"></div>
-                                </div>
-                                <br>
-                                <a href="https://www.kipris.or.kr" target="_blank" style="color:#2196F3; font-size:12px;">KIPRIS에서 보기 →</a>
-                            </td>
-                        </tr>
-                        </table>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                refusal = item.get("refusal_analysis", {})
-                if refusal.get("reason_summary"):
-                    st.markdown(
-                        f"- 거절이유 요약: {refusal.get('reason_summary')} "
-                        f"(현재 상표 관련성: {refusal.get('current_mark_relevance_label', '-')})"
-                    )
-                if refusal.get("cited_marks"):
-                    st.markdown(f"- 인용상표: {', '.join(refusal.get('cited_marks', []))}")
-                if refusal.get("weak_elements") or refusal.get("refusal_core"):
-                    st.markdown(
-                        f"- 약한 요소: {', '.join(refusal.get('weak_elements', [])) or '-'} / "
-                        f"거절 핵심 요부: {refusal.get('refusal_core', '-') or '-'}"
-                    )
-
-            st.markdown("### 데이터 표 보기")
-            result_df = pd.DataFrame(
-                [
-                    {
-                        "상표명": row["trademarkName"],
-                        "혼동위험": f'{row.get("confusion_score", 0)}%',
-                        "표장유사도": f'{row.get("mark_similarity", 0)}%',
-                        "상품판단": row.get("product_similarity_label", "-"),
-                        "상태": row.get("status_normalized", row["registerStatus"]),
-                        "생존성": row.get("survival_label", "-"),
-                        "점수반영": row.get("score_reflection_label", "-"),
-                        "류": row["classificationCode"],
-                        "출원인": row["applicantName"],
-                        "검색경로": _format_hit_sources_brief(row.get("hit_sources", []) or [], limit=2),
-                        "exact_override": "Y" if (isinstance(row.get("exact_override"), dict) and row.get("exact_override", {}).get("should_override")) else "",
-                    }
-                    for row in results[:10]
-                ]
-            )
+            st.markdown("### 요약 표 보기")
+            rows = []
+            for row in results[:10]:
+                base = {
+                    "상표명": _safe_inline_text(row.get("trademarkName", "")),
+                    "혼동위험": f"{int(row.get('confusion_score', 0) or 0)}%",
+                    "표장유사도": f"{int(row.get('mark_similarity', 0) or 0)}%",
+                    "상품/서비스유사도": f"{int(row.get('product_similarity_score', 0) or 0)}%",
+                    "상품판단": _safe_inline_text(row.get("product_similarity_label", "-")),
+                    "상태": _safe_inline_text(row.get("status_normalized", row.get("registerStatus", "-"))),
+                    "류": _safe_inline_text(row.get("classificationCode", "-")),
+                    "출원인": _safe_inline_text(row.get("applicantName", "-")),
+                    "출원번호": _safe_inline_text(row.get("applicationNumber", "-")),
+                    "출원일": _safe_inline_text(row.get("applicationDate", "-")),
+                }
+                if debug_hits:
+                    base["검색경로(요약)"] = _format_hit_sources_brief(row.get("hit_sources", []) or [], limit=2)
+                    base["exact_override"] = "Y" if (
+                        isinstance(row.get("exact_override"), dict) and row.get("exact_override", {}).get("should_override")
+                    ) else ""
+                rows.append(base)
+            result_df = pd.DataFrame(rows)
             styled_df = result_df.style.map(similarity_cell_style, subset=["혼동위험", "표장유사도"])
             st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
@@ -2697,14 +2684,10 @@ elif st.session_state.step == 4:
             )
 
         if excluded_results:
-            st.markdown(
-                f"""
-                <div class="tip-box" style="margin-top:12px;">
-                검색 결과가 있었지만 상품 유사성 검토에서 제외된 후보 {len(excluded_results)}건은 최종 점수와 top_prior에 반영하지 않았습니다.
-                예: {', '.join(row['trademarkName'] for row in excluded_results[:3])}
-                </div>
-                """,
-                unsafe_allow_html=True,
+            examples = ", ".join([_safe_inline_text(row.get("trademarkName", "")) for row in excluded_results[:3] if _safe_inline_text(row.get("trademarkName", ""))])
+            st.info(
+                f"검색 결과가 있었지만 상품 유사성 검토에서 제외된 후보 {len(excluded_results)}건은 최종 점수와 top_prior에 반영하지 않았습니다."
+                + (f" 예: {examples}" if examples else "")
             )
 
     st.markdown(

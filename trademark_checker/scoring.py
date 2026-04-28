@@ -82,6 +82,10 @@ OVERLAP_TYPE_ALIASES = {
     "class35_general_market_link": "class35_general_market_link",
     "class35_weak_business_support": "class35_weak_business_support",
     "class35_no_material_link": "class35_no_material_link",
+    "same_class_only_weak": "same_class_only_weak",
+    "same_class_near_services": "same_class_near_services",
+    "same_class_core_service_link": "same_class_core_service_link",
+    "same_class_core_goods_link": "same_class_core_goods_link",
     "same_class_with_context": "same_class_only",
     "same_class_only": "same_class_only",
     "cross_kind_exception": "no_material_overlap",
@@ -103,6 +107,10 @@ OVERLAP_TYPE_LABELS = {
     "class35_general_market_link": "제35류 일반 유통 연계",
     "class35_weak_business_support": "제35류 경영/광고 지원(약함)",
     "class35_no_material_link": "제35류 무관",
+    "same_class_only_weak": "동일 류(약한 보조 검토)",
+    "same_class_near_services": "동일 류 내 근접 서비스업(경제적 견련성)",
+    "same_class_core_service_link": "동일 류 내 핵심 서비스업 연계(강함)",
+    "same_class_core_goods_link": "동일 류 내 핵심 상품군 연계(강함)",
     "same_class_only": "동일 류 보조 검토",
     "no_material_overlap": "실질 중첩 없음",
 }
@@ -119,6 +127,10 @@ OVERLAP_TYPE_RANKS = {
     "class35_weak_business_support": 1,
     "class35_no_material_link": 0,
     "retail_overlap_only": 2,
+    "same_class_only_weak": 1,
+    "same_class_near_services": 2,
+    "same_class_core_service_link": 3,
+    "same_class_core_goods_link": 3,
     "same_class_only": 1,
     "no_material_overlap": 0,
 }
@@ -729,6 +741,310 @@ def detect_exact_mark_override(
     }
 
 
+_CLASS36_SERVICE_GROUPS: dict[str, set[str]] = {
+    "finance": {
+        "금융",
+        "은행",
+        "통화",
+        "신용",
+        "대출",
+        "여신",
+        "투자",
+        "증권",
+        "자산",
+        "자산관리",
+        "재무",
+        "finance",
+        "bank",
+        "banking",
+        "credit",
+        "loan",
+        "lending",
+        "investment",
+        "securities",
+        "asset",
+        "wealth",
+    },
+    "insurance": {
+        "보험",
+        "보증",
+        "손해보험",
+        "생명보험",
+        "insurance",
+        "assurance",
+    },
+    "real_estate": {
+        "부동산",
+        "중개",
+        "중개업",
+        "임대",
+        "관리",
+        "분양",
+        "개발",
+        "realestate",
+        "real",
+        "estate",
+        "property",
+        "leasing",
+        "rental",
+        "brokerage",
+    },
+    "fintech_payment": {
+        "결제",
+        "전자지급",
+        "전자결제",
+        "핀테크",
+        "지급",
+        "송금",
+        "가상자산",
+        "암호화폐",
+        "payment",
+        "pay",
+        "fintech",
+        "wallet",
+        "crypto",
+        "virtual",
+        "asset",
+    },
+}
+_CLASS36_GROUP_LABELS = {
+    "finance": "금융/은행/투자",
+    "insurance": "보험/보증",
+    "real_estate": "부동산/중개/임대",
+    "fintech_payment": "결제/핀테크/전자지급",
+}
+_CLASS36_ADJACENT_MEDIUM = {
+    frozenset({"finance", "real_estate"}),
+    frozenset({"finance", "insurance"}),
+    frozenset({"real_estate", "fintech_payment"}),
+    frozenset({"insurance", "fintech_payment"}),
+}
+_CLASS36_ADJACENT_STRONG = {
+    frozenset({"finance", "fintech_payment"}),
+}
+
+
+def _analyze_dominant_mark_overlap(target_mark: str, prior_mark: str) -> dict:
+    left = _normalize(target_mark)
+    right = _normalize(prior_mark)
+    if not left or not right or left == right:
+        return {
+            "shared_dominant_term": False,
+            "dominant_term": "",
+            "has_prefix_or_suffix_only_difference": False,
+            "dominant_overlap_strength": "none",
+            "mark_similarity_floor": 0,
+        }
+
+    dominant = ""
+    container = ""
+    if left in right:
+        dominant = left
+        container = right
+    elif right in left:
+        dominant = right
+        container = left
+    else:
+        return {
+            "shared_dominant_term": False,
+            "dominant_term": "",
+            "has_prefix_or_suffix_only_difference": False,
+            "dominant_overlap_strength": "none",
+            "mark_similarity_floor": 0,
+        }
+
+    prefix_only = container.endswith(dominant)
+    suffix_only = container.startswith(dominant)
+    if not (prefix_only or suffix_only):
+        return {
+            "shared_dominant_term": True,
+            "dominant_term": dominant,
+            "has_prefix_or_suffix_only_difference": False,
+            "dominant_overlap_strength": "weak",
+            "mark_similarity_floor": 0,
+        }
+
+    extra = container[: -len(dominant)] if prefix_only else container[len(dominant) :]
+    extra = extra.strip()
+    extra_len = len(extra)
+    if len(dominant) < 2:
+        strength = "weak"
+        floor = 0
+    elif extra_len <= 3:
+        strength = "strong"
+        floor = 86 if len(dominant) >= 4 else 84
+    elif extra_len <= 5:
+        strength = "medium"
+        floor = 82
+    else:
+        strength = "weak"
+        floor = 0
+
+    return {
+        "shared_dominant_term": True,
+        "dominant_term": dominant,
+        "has_prefix_or_suffix_only_difference": True,
+        "dominant_overlap_strength": strength,
+        "mark_similarity_floor": floor,
+        "extra_affix": extra[:8],
+    }
+
+
+def _assess_class36_service_proximity(target_texts: list[str], prior_texts: list[str]) -> dict:
+    target_tokens: set[str] = set()
+    prior_tokens: set[str] = set()
+    for text in target_texts:
+        target_tokens |= set(_tokenize(text))
+    for text in prior_texts:
+        prior_tokens |= set(_tokenize(text))
+
+    def best_group(tokens: set[str]) -> tuple[str, int, list[str]]:
+        best_key = ""
+        best_hits = 0
+        best_terms: list[str] = []
+        for key, keywords in _CLASS36_SERVICE_GROUPS.items():
+            keyword_set = {str(k or "").lower() for k in keywords if str(k or "").strip()}
+            matched: set[str] = set()
+            for token in tokens:
+                t = str(token or "").lower()
+                if not t:
+                    continue
+                for kw in keyword_set:
+                    if kw and (kw in t or t in kw):
+                        matched.add(kw)
+            hits = sorted(list(matched))
+            if len(hits) > best_hits:
+                best_key = key
+                best_hits = len(hits)
+                best_terms = hits[:6]
+        return best_key, best_hits, best_terms
+
+    t_group, t_hits, t_terms = best_group(target_tokens)
+    p_group, p_hits, p_terms = best_group(prior_tokens)
+    overlap_terms = sorted(list(set(t_terms) & set(p_terms)))[:8]
+    if not overlap_terms:
+        overlap_terms = sorted(list((target_tokens & prior_tokens)))[:8]
+
+    level = "weak"
+    if t_group and p_group and t_group == p_group and min(t_hits, p_hits) >= 1:
+        level = "strong"
+    elif t_group and p_group and frozenset({t_group, p_group}) in _CLASS36_ADJACENT_STRONG:
+        level = "strong"
+    elif t_group and p_group and frozenset({t_group, p_group}) in _CLASS36_ADJACENT_MEDIUM:
+        level = "medium"
+    elif len(overlap_terms) >= 2:
+        level = "medium"
+
+    if level == "strong":
+        overlap_type = "same_class_core_service_link"
+        floor = 68
+    elif level == "medium":
+        overlap_type = "same_class_near_services"
+        floor = 45
+    else:
+        overlap_type = "same_class_only_weak"
+        floor = 24
+
+    reason = "제36류 서비스 업종 텍스트 근접도를 기반으로 동일 류 내 경제적 견련성을 반영했습니다."
+    if t_group and p_group:
+        reason = (
+            f"제36류 서비스 근접도: {(_CLASS36_GROUP_LABELS.get(t_group,t_group))} ↔ "
+            f"{(_CLASS36_GROUP_LABELS.get(p_group,p_group))}로 판단했습니다."
+        )
+
+    return {
+        "level": level,
+        "overlap_type": overlap_type,
+        "product_similarity_floor": int(floor),
+        "reason": reason,
+        "target_group": t_group,
+        "prior_group": p_group,
+        "target_terms": t_terms,
+        "prior_terms": p_terms,
+        "overlap_terms": overlap_terms,
+    }
+
+
+def _apply_same_class_only_refinement(item: dict, context: dict) -> dict:
+    overlap_type = _canonical_overlap_type(item.get("overlap_type", item.get("product_bucket", "")))
+    if overlap_type != "same_class_only":
+        return item
+    if not item.get("counts_toward_final_score"):
+        return item
+    if str(os.getenv("TRADEMARK_DISABLE_CLASS36_PROXIMITY", "") or "").strip() == "1":
+        return item
+    exact_override = item.get("exact_override", {}) if isinstance(item.get("exact_override"), dict) else {}
+    if exact_override.get("should_override"):
+        return item
+
+    target_classes = set([str(x) for x in (context.get("classes", []) or [])])
+    prior_classes = set([str(x) for x in (item.get("classes", []) or [])])
+    shared = target_classes & prior_classes
+    if "36" not in shared:
+        return item
+
+    target_mark = str(item.get("target_trademark_name", "") or "")
+    prior_mark = str(item.get("trademarkName", "") or "")
+    dominant = _analyze_dominant_mark_overlap(target_mark, prior_mark)
+
+    mark_similarity = int(item.get("mark_similarity", 0) or 0)
+    mark_floor = int(dominant.get("mark_similarity_floor", 0) or 0)
+    mark_adjusted = max(mark_similarity, mark_floor)
+
+    target_texts = [str(context.get("specific_product", "") or ""), *[str(x or "") for x in (context.get("field_labels", []) or [])]]
+    prior_texts = []
+    for raw in (item.get("prior_designated_items", []) or []):
+        if isinstance(raw, dict):
+            prior_texts.append(str(raw.get("prior_item_label", "") or ""))
+    proximity = _assess_class36_service_proximity(target_texts, prior_texts)
+
+    level = str(proximity.get("level", "weak") or "weak")
+    prox_overlap_type = str(proximity.get("overlap_type", "same_class_only_weak") or "same_class_only_weak")
+    product_floor = int(proximity.get("product_similarity_floor", 0) or 0)
+
+    if mark_adjusted < 75 and level != "strong":
+        prox_overlap_type = "same_class_only_weak"
+        product_floor = min(product_floor, 25)
+
+    original = {
+        "original_overlap_type": str(item.get("overlap_type", "") or "").strip(),
+        "original_product_similarity_score": int(item.get("product_similarity_score", 0) or 0),
+        "original_mark_similarity": int(mark_similarity),
+    }
+
+    updated = dict(item)
+    updated["dominant_mark_overlap"] = dominant
+    if mark_adjusted != mark_similarity:
+        updated["mark_similarity"] = int(mark_adjusted)
+        updated["mark_similarity_original"] = int(mark_similarity)
+    if product_floor:
+        updated["product_similarity_score"] = max(int(updated.get("product_similarity_score", 0) or 0), product_floor)
+    updated["overlap_type"] = prox_overlap_type
+    updated["product_similarity_label"] = OVERLAP_TYPE_LABELS.get(prox_overlap_type, updated.get("product_similarity_label", ""))
+    updated["overlap_basis"] = "class36_service_proximity"
+    updated["product_reason"] = (
+        (str(updated.get("product_reason", "") or "").strip() + " " + str(proximity.get("reason", "") or "").strip()).strip()
+    )
+    if prox_overlap_type == "same_class_core_service_link":
+        updated["product_penalty_weight"] = max(float(updated.get("product_penalty_weight", 0.0) or 0.0), 0.55)
+    elif prox_overlap_type == "same_class_near_services":
+        updated["product_penalty_weight"] = max(float(updated.get("product_penalty_weight", 0.0) or 0.0), 0.45)
+    else:
+        updated["product_penalty_weight"] = max(float(updated.get("product_penalty_weight", 0.0) or 0.0), 0.38)
+
+    updated["same_class_proximity_override"] = {
+        **original,
+        "final_overlap_type": prox_overlap_type,
+        "adjusted_product_similarity_score": int(updated.get("product_similarity_score", 0) or 0),
+        "adjusted_mark_similarity": int(updated.get("mark_similarity", 0) or 0),
+        "proximity_level": level,
+        "proximity_terms": proximity.get("overlap_terms", []),
+        "target_group": proximity.get("target_group", ""),
+        "prior_group": proximity.get("prior_group", ""),
+    }
+    return updated
+
+
 def _distinctiveness_analysis(
     trademark_name: str,
     is_coined: bool,
@@ -1121,6 +1437,17 @@ def _confusion_metrics(item: dict) -> dict:
             confusion_score = max(confusion_score, 88)
 
     guardrail_reasons: list[str] = []
+    if item.get("counts_toward_final_score") and mark_score >= 75:
+        if overlap_type == "same_class_near_services":
+            floor = 65
+            if confusion_score < floor:
+                confusion_score = floor
+                guardrail_reasons.append("same_class_near_services_floor")
+        elif overlap_type in {"same_class_core_service_link", "same_class_core_goods_link"}:
+            floor = 72
+            if confusion_score < floor:
+                confusion_score = floor
+                guardrail_reasons.append("same_class_core_link_floor")
     strong_overlap = bool(
         item.get("product_bucket") == "same_code"
         or overlap_type
@@ -1131,6 +1458,8 @@ def _confusion_metrics(item: dict) -> dict:
             "exact_same_mark_same_class_near_goods",
             "exact_same_mark_related_goods",
             "exact_same_mark_cross_class_trade_link",
+            "same_class_core_service_link",
+            "same_class_core_goods_link",
         }
     )
     weak_overlap = overlap_type in {
@@ -1140,6 +1469,7 @@ def _confusion_metrics(item: dict) -> dict:
         "class35_weak_business_support",
         "class35_no_material_link",
         "same_class_only",
+        "same_class_only_weak",
     }
     if not strong_overlap and weak_overlap:
         if product_score < 55 and appearance < 55 and phonetic >= 85:
@@ -1571,6 +1901,45 @@ def _calibrate_score(
             explanations.append(
                 "제35류 종합 유통/쇼핑몰 성격은 자동 거절 사유가 아니므로 보조 경고 수준으로만 제한했습니다."
             )
+    elif strongest_type in {"same_class_core_service_link", "same_class_core_goods_link"}:
+        lower, upper = 40, 60
+        if mark_similarity >= 80 or confusion_score >= 78:
+            lower, upper = 35, 55
+        elif mark_similarity >= 75 and confusion_score >= 72:
+            lower, upper = 40, 58
+        calibrated = min(max(calibrated, lower), upper)
+        cap_info = {
+            "cap_reason": f"same class core link (confusion={confusion_score}%)",
+            "stage2_cap_upper": upper,
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append(
+            "동일 류 내 핵심 서비스/상품군으로 경제적 견련성이 강해 same-class-only보다 보수적으로 등록가능성을 제한했습니다."
+        )
+    elif strongest_type == "same_class_near_services":
+        lower, upper = 55, 68
+        if confusion_score >= 75:
+            lower, upper = 45, 60
+        elif confusion_score >= 65:
+            lower, upper = 50, 65
+        calibrated = min(max(calibrated, lower), upper)
+        cap_info = {
+            "cap_reason": f"same class near services (confusion={confusion_score}%)",
+            "stage2_cap_upper": upper,
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append(
+            "직접 유사군코드 일치는 없더라도 동일 류 내 근접 서비스업으로 경제적 견련성이 있어 등록가능성을 55~68 구간으로 제한했습니다."
+        )
+    elif strongest_type == "same_class_only_weak":
+        lower, upper = 62, 75
+        calibrated = min(max(calibrated, lower), upper)
+        cap_info = {
+            "cap_reason": f"same class only weak (confusion={confusion_score}%)",
+            "stage2_cap_upper": upper,
+            "cap_applied_overlap_type": strongest_type,
+        }
+        explanations.append("같은 니스류이나 근접 업종 근거가 약해 보조 검토군(약함)으로만 제한했습니다.")
     elif strongest_type == "same_class_only":
         lower, upper = 60, 75
         # 심각한 오류 해결: confusion_score가 높으면 same_class_only라도 캡을 강제로 낮춤
@@ -1807,6 +2176,7 @@ def evaluate_registration(
             excluded.append(payload)
             continue
         enriched = _enrich_mark_similarity(payload, trademark_name, trademark_type)
+        enriched = _apply_same_class_only_refinement(enriched, context)
         included.append(_confusion_metrics(enriched))
 
     included.sort(

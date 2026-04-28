@@ -192,7 +192,7 @@ def build_cases() -> list[dict]:
         _case(
             case_id="SAME_CLASS_ONLY_WEAK_GOODS",
             category="same class only but weak goods overlap",
-            expected="should_remain_same_class_only",
+            expected="should_be_class36_near_or_core",
             trademark_name="LEXBANK",
             trademark_type="문자만",
             is_coined=True,
@@ -374,7 +374,7 @@ def build_cases() -> list[dict]:
             _case(
                 case_id=f"SAME_CLASS_WEAK_{i}",
                 category="same class only but weak goods overlap",
-                expected="should_remain_same_class_only",
+                expected="should_be_class36_near_or_core",
                 trademark_name=f"WEAK{i}BANK",
                 trademark_type="문자만",
                 is_coined=True,
@@ -397,6 +397,62 @@ def build_cases() -> list[dict]:
             )
         )
         idx += 1
+
+    _add(
+        _case(
+            case_id="CLASS36_GTREE_FINANCE_OREN",
+            category="class36 same class near/core services",
+            expected="should_be_class36_near_or_core",
+            trademark_name="G트리",
+            trademark_type="문자만",
+            is_coined=True,
+            selected_kind="services",
+            selected_classes=[36],
+            selected_codes=[],
+            specific_product="금융업",
+            prior_items=[
+                {
+                    "applicationNumber": f"{idx}",
+                    "trademarkName": "오렌G트리",
+                    "classificationCode": "36",
+                    "similarityGroupCode": "",
+                    "prior_designated_items": [
+                        {"prior_item_label": "은행업", "prior_class_no": "36", "prior_similarity_codes": []}
+                    ],
+                    **common_live,
+                }
+            ],
+        )
+    )
+    idx += 1
+
+    _add(
+        _case(
+            case_id="CLASS36_GTREE_REALESTATE_OREN",
+            category="class36 same class near/core services",
+            expected="should_be_class36_near_or_core",
+            trademark_name="G트리",
+            trademark_type="문자만",
+            is_coined=True,
+            selected_kind="services",
+            selected_classes=[36],
+            selected_codes=[],
+            specific_product="부동산업",
+            prior_items=[
+                {
+                    "applicationNumber": f"{idx}",
+                    "trademarkName": "오렌G트리",
+                    "classificationCode": "36",
+                    "similarityGroupCode": "",
+                    "prior_designated_items": [
+                        {"prior_item_label": "부동산중개업", "prior_class_no": "36", "prior_similarity_codes": []}
+                    ],
+                    **common_live,
+                }
+            ],
+        )
+    )
+    idx += 1
 
     return CASES
 

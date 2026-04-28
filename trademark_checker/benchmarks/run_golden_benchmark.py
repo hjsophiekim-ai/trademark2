@@ -55,7 +55,7 @@ def _predict_outcome(post: dict) -> str:
         return "strong_blocker"
     if int(post.get("confusion_score", 0)) >= 75:
         return "medium_risk"
-    if overlap == "same_class_only":
+    if overlap in {"same_class_only", "same_class_only_weak"}:
         return "same_class_only"
     return "low_risk"
 
@@ -69,7 +69,14 @@ def _is_expected_satisfied(expected: str, post: dict) -> bool:
     if expected == "should_not_be_exact_override":
         return not bool(post.get("exact_override"))
     if expected == "should_remain_same_class_only":
-        return str(post.get("overlap_type", "")) == "same_class_only"
+        return str(post.get("overlap_type", "")) in {"same_class_only", "same_class_only_weak"}
+    if expected == "should_be_class36_near_or_core":
+        return (
+            str(post.get("overlap_type", "")) in {"same_class_near_services", "same_class_core_service_link", "same_class_core_goods_link"}
+            and int(post.get("product_similarity_score", 0) or 0) >= 35
+            and int(post.get("confusion_score", 0) or 0) >= 60
+            and int(post.get("score", 100) or 100) <= 68
+        )
     return True
 
 

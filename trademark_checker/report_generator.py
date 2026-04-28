@@ -158,6 +158,28 @@ def _render_top_priors(pdf: KoreanPDF, width: float, payload: dict, top_prior: l
             _overlap_line(item),
             f"상품 범위 판단: {item.get('product_reason', '-')}",
         ]
+        prox = item.get("same_class_proximity_override", {}) if isinstance(item.get("same_class_proximity_override"), dict) else {}
+        if prox:
+            final_type = str(prox.get("final_overlap_type", "") or "").strip()
+            prox_level = str(prox.get("proximity_level", "") or "").strip()
+            if final_type in {"same_class_near_services", "same_class_core_service_link", "same_class_core_goods_link"}:
+                lines.append(
+                    "설명: 직접 SC 일치는 없으나 동일 류 내부 업종/서비스 근접성이 있어 stronger overlap으로 반영했습니다."
+                )
+                if prox_level:
+                    lines.append(f"설명: 동일 류 근접도 레벨={prox_level}, 최종 overlap_type={final_type}")
+            elif final_type == "same_class_only_weak":
+                lines.append("설명: 동일 류이지만 근접 업종 근거가 약해 약한 보조 검토군으로만 반영했습니다.")
+
+        dominant = item.get("dominant_mark_overlap", {}) if isinstance(item.get("dominant_mark_overlap"), dict) else {}
+        if dominant.get("shared_dominant_term") and dominant.get("has_prefix_or_suffix_only_difference"):
+            strength = str(dominant.get("dominant_overlap_strength", "") or "").strip()
+            dominant_term = str(dominant.get("dominant_term", "") or "").strip()
+            extra = str(dominant.get("extra_affix", "") or "").strip()
+            if dominant_term:
+                lines.append(f"설명: 요부 '{dominant_term}'가 공통이며 선행표장에 보조적 요소('{extra}' 등)가 추가된 형태입니다.")
+                if strength:
+                    lines.append(f"설명: 요부 공통 판단 강도={strength}")
         hit_sources = [src for src in (item.get("hit_sources", []) or []) if isinstance(src, dict)]
         if hit_sources:
             hit_sources.sort(key=lambda r: (-float(r.get("query_weight", 0.0) or 0.0), len(str(r.get("term", "")))))

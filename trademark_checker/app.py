@@ -215,24 +215,39 @@ def _build_hit_source_rows(item: dict) -> list[dict]:
 
 def render_prior_card_user(item: dict, rank: int) -> None:
     model = build_prior_user_view_model(item, rank)
-    left, right = st.columns([3, 1], vertical_alignment="top")
-    with left:
-        st.markdown(f"**{model['rank']}. {model['trademark_name']}** · {model['risk_label']}")
-        st.caption(f"출원번호: {model['application_number']} | 출원일: {model['application_date']}")
-        st.caption(f"상태: {model['status']} | 류: {model['class_code']}")
-        st.caption(f"출원인: {model['applicant']}")
-        st.caption(f"상품군 판단: {model['product_summary']}")
-    with right:
-        st.metric("혼동위험", f"{model['confusion_score']}%")
-        m1, m2 = st.columns(2)
-        with m1:
-            st.metric("표장", f"{model['mark_similarity']}%")
-        with m2:
-            st.metric("상품/서비스", f"{model['product_similarity']}%")
-        if hasattr(st, "link_button"):
-            st.link_button("KIPRIS에서 보기", model["kipris_url"])
-        else:
-            st.markdown(f"[KIPRIS에서 보기]({model['kipris_url']})")
+    level = str(model.get("risk_level", "low") or "low")
+    if level == "high":
+        card_class = "trademark-high"
+    elif level == "medium":
+        card_class = "trademark-medium"
+    else:
+        card_class = "trademark-low"
+
+    st.markdown(
+        f"""
+        <div class="{card_class}">
+          <div class="prior-header">
+            <div class="prior-title">{model['rank']}. {model['trademark_name']}</div>
+            <div class="risk-badge {level}">{model['risk_label']}</div>
+          </div>
+          <div class="prior-meta">출원번호: {model['application_number']} | 출원일: {model['application_date']}</div>
+          <div class="prior-meta">상태: {model['status']} | 류: {model['class_code']} | 출원인: {model['applicant']}</div>
+          <div class="prior-meta">상품군 판단: {model['product_summary']}</div>
+          <div class="prior-bottom">
+            <div></div>
+            <div class="prior-scores">
+              <div class="big">혼동위험 {model['confusion_score']}%</div>
+              <div class="sub">표장 {model['mark_similarity']}% / 상품 {model['product_similarity']}%</div>
+              <progress class="risk-progress {level}" value="{model['confusion_score']}" max="100"></progress>
+              <div class="kipris-wrap">
+                <a class="kipris-link" href="{model['kipris_url']}" target="_blank">KIPRIS에서 보기 →</a>
+              </div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_prior_card_debug(item: dict) -> None:
@@ -1363,6 +1378,24 @@ st.markdown(
     .trademark-high { background:#FFEBEE; border-left:4px solid #F44336; border-radius:8px; padding:14px; margin:8px 0; }
     .trademark-medium { background:#FFF3E0; border-left:4px solid #FF9800; border-radius:8px; padding:14px; margin:8px 0; }
     .trademark-low { background:#E8F5E9; border-left:4px solid #4CAF50; border-radius:8px; padding:14px; margin:8px 0; }
+    .prior-header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .prior-title { font-size:16px; font-weight:700; }
+    .risk-badge { font-size:12px; font-weight:700; padding:3px 10px; border-radius:999px; }
+    .risk-badge.high { background:#F44336; color:white; }
+    .risk-badge.medium { background:#FF9800; color:white; }
+    .risk-badge.low { background:#4CAF50; color:white; }
+    .prior-meta { color:#37474F; font-size:12px; margin-top:4px; }
+    .prior-bottom { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; margin-top:10px; }
+    .prior-scores { text-align:right; min-width:200px; }
+    .prior-scores .big { font-size:20px; font-weight:800; }
+    .prior-scores .sub { font-size:12px; color:#455A64; margin-top:2px; }
+    .risk-progress { width:100%; height:10px; margin-top:6px; }
+    .risk-progress.high { accent-color:#F44336; }
+    .risk-progress.medium { accent-color:#FF9800; }
+    .risk-progress.low { accent-color:#4CAF50; }
+    .kipris-wrap { margin-top:6px; }
+    .kipris-link { font-size:12px; font-weight:700; color:#1565C0; text-decoration:none; }
+    .kipris-link:hover { text-decoration:underline; }
     .stButton>button {
         background: linear-gradient(135deg, #1976D2, #2196F3);
         color: white;

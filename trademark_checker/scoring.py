@@ -1417,6 +1417,16 @@ def _confusion_metrics(item: dict) -> dict:
     elif item.get("mark_identity") == "exact" and item.get("counts_toward_final_score"):
         confusion_score = max(confusion_score, 88)
 
+    # 동일 류 내 완전 동일 상표(exact_same_mark_same_class)는 혼동 위험도 100% 고정
+    # 상표법 제34조 제1항 제7호: 동일 상표·동일 지정상품은 거절 확정 사유
+    overlap_type_early = _canonical_overlap_type(item.get("overlap_type", item.get("product_bucket", "excluded")))
+    if (
+        item.get("mark_identity") == "exact"
+        and overlap_type_early == "exact_same_mark_same_class"
+        and item.get("counts_toward_final_score")
+    ):
+        confusion_score = 100
+
     #BUG FIX: exact_primary_overlap(SC 코드가 직접 일치)하면 confusion_score를 80 이상으로 강제 인상
     #KIPRIS 상세페이지에서 추출한 실제 SC 코드와 사용자의 선택 코드가 정확히 일치하는 경우
     #상표 유사도와 무관하게 혼동 위험이 매우 높다고 판단
@@ -1895,6 +1905,14 @@ def _calibrate_score(
     primary_match_count = int(strongest.get("primary_code_overlap_count", 0)) if strongest else 0
     status = str(strongest.get("status_normalized", strongest.get("registerStatus", "")) or "") if strongest else ""
     is_registered = status == "등록"
+
+    # ── 최강 장애물 우선 원칙 ──────────────────────────────────────────────────
+    # 최종 등록 가능성은 (100 - 가장 높은 혼동 위험도)를 초과할 수 없음
+    # 모든 live_blocker 중 confusion_score 최댓값을 기준으로 상한 설정
+    max_confusion = max((item.get("confusion_score", 0) for item in live_blockers), default=0)
+    strongest_blocker_cap = 100 - max_confusion  # e.g. confusion=88 → cap=12
+    # ──────────────────────────────────────────────────────────────────────────
+
     blocker_pressure = {}
     if str(os.getenv("TRADEMARK_DISABLE_BLOCKER_PRESSURE", "") or "").strip() != "1":
         blocker_pressure = _evaluate_strongest_blocker_pressure(strongest, live_blockers)
@@ -1926,22 +1944,33 @@ def _calibrate_score(
     }:
         lower, upper = 10, 55
         if strongest_type == "exact_same_mark_same_class":
-            lower, upper = 8, 20
+            # 동일 류·동일 상표: 등록 가능성 0~10% 구간으로 극소화
+            lower, upper = 0, 10
         elif strongest_type == "exact_same_mark_same_class_near_goods":
-            lower, upper = 10, 28
+            # 기존 10~28 → 50% 이상 하향: 5~12
+            lower, upper = 5, 12
         elif strongest_type == "exact_same_mark_related_goods":
-            lower, upper = 15, 50
+            # 기존 15~50 → 50% 이상 하향: 8~20
+            lower, upper = 8, 20
         elif strongest_type == "exact_same_mark_cross_class_trade_link":
-            lower, upper = 20, 55
-        calibrated = min(max(calibrated, lower), upper)
+            # 기존 20~55 → 단계적 하향 (이전 수정 5~15 → 추가 하향): 3~8
+            lower, upper = 3, 8
+        # 최강 장애물의 혼동 위험도를 역산한 확률(100 - confusion_score)을 상한과 비교해
+        # 더 낮은 값을 실질 상한으로 사용 (혼동 위험이 높을수록 등록 가능성 상한 추가 압박)
+        calculated_prob = 100 - confusion_score
+        effective_upper = min(calculated_prob, upper)
+        # effective_upper가 lower보다 낮아지는 극단 케이스 방지
+        effective_upper = max(effective_upper, lower)
+        calibrated = min(max(calibrated, lower), effective_upper)
         cap_info = {
-            "cap_reason": f"exact same mark override (type={strongest_type}, confusion={confusion_score}%)",
-            "stage2_cap_upper": upper,
+            "cap_reason": f"exact same mark override (type={strongest_type}, confusion={confusion_score}%, effective_upper={effective_upper})",
+            "stage2_cap_upper": effective_upper,
             "cap_applied_overlap_type": strongest_type,
         }
         explanations.append("완전 동일표장이 확인되어 발음 유사도와 무관하게 상대적 거절사유 위험을 강하게 반영했습니다.")
         explanations.append(
-            f"overlap 유형은 {OVERLAP_TYPE_LABELS.get(strongest_type, strongest_type)}로 평가하여 등록가능성을 {lower}~{upper} 구간으로 제한했습니다."
+            f"overlap 유형은 {OVERLAP_TYPE_LABELS.get(strongest_type, strongest_type)}로 평가하여 등록가능성을 {lower}~{effective_upper} 구간으로 제한했습니다."
+            + (f" (혼동위험 {confusion_score}% 역산 상한 {calculated_prob}% 적용)" if effective_upper < upper else "")
         )
         explanations.append(
             f"상품 유사성 필터 통과 후보 {len(included)}건 중 최종 점수에 직접 반영한 실질 장애물은 {len(live_blockers)}건입니다."
@@ -1967,8 +1996,9 @@ def _calibrate_score(
             "class35_no_material_link",
         }
     ):
-        upper = 18
-        lower = 5
+        # 기존 5~18 → 50% 이상 하향: 3~8
+        upper = 8
+        lower = 3
         calibrated = min(max(calibrated, lower), upper)
         cap_info = {
             "cap_reason": f"exact mark live blocker (confusion={confusion_score}%)",
@@ -1976,7 +2006,7 @@ def _calibrate_score(
             "cap_applied_overlap_type": strongest_type,
         }
         explanations.append(
-            "완전 동일한 표장이 실질 장애물로 존재해 상대적 거절사유 관점에서 등록 가능성을 5~18 구간으로 강하게 제한했습니다."
+            "완전 동일한 표장이 실질 장애물로 존재해 상대적 거절사유 관점에서 등록 가능성을 3~8 구간으로 강하게 제한했습니다."
         )
         explanations.append(
             f"상품 유사성 필터 통과 후보 {len(included)}건 중 최종 점수에 직접 반영한 실질 장애물은 {len(live_blockers)}건입니다."
@@ -1998,7 +2028,8 @@ def _calibrate_score(
         elif mark_similarity >= 80:
             cap = 35
         if strongest.get("mark_identity") == "exact":
-            cap = min(cap, 18)
+            # 기존 18 → 50% 이상 하향: 8
+            cap = min(cap, 8)
         if primary_match_count >= 2:
             cap = max(15, cap - 5)
         calibrated = min(calibrated, max(15, cap))
@@ -2155,8 +2186,9 @@ def _calibrate_score(
         explanations.append("타 류 예외 검토군은 보조 경고 수준으로만 유지했습니다.")
 
     if strongest_type == "exact_primary_overlap" and confusion_score >= 80:
-        calibrated = min(calibrated, 45)
-        cap_info["stage2_cap_upper"] = min(cap_info["stage2_cap_upper"], 45)
+        # 기존 45 → 20으로 하향
+        calibrated = min(calibrated, 20)
+        cap_info["stage2_cap_upper"] = min(cap_info["stage2_cap_upper"], 20)
     if strongest_type == "related_primary_overlap" and confusion_score >= 80:
         calibrated = min(calibrated, 50)
         cap_info["stage2_cap_upper"] = min(cap_info["stage2_cap_upper"], 50)
@@ -2170,6 +2202,22 @@ def _calibrate_score(
         explanations.append(f"실질 장애물 {len(live_blockers)}건 중 실제 충돌 위험 후보는 {actual_risk_count}건입니다.")
     else:
         explanations.append("실질 장애물 후보는 있으나 실제 충돌 위험도는 제한적으로 평가했습니다.")
+
+    # ── 최강 장애물 우선 원칙 최종 적용 ─────────────────────────────────────────
+    # 모든 분기 처리 후, (100 - 최고 혼동위험도) 상한을 최종 강제 적용
+    # 이 cap은 어떤 분기에서도 우회할 수 없는 하드 상한선
+    if max_confusion > 0 and calibrated > strongest_blocker_cap:
+        pre_cap = calibrated
+        calibrated = max(0, strongest_blocker_cap)
+        cap_info["stage2_cap_upper"] = min(cap_info.get("stage2_cap_upper", 100), calibrated)
+        cap_info["strongest_blocker_cap"] = strongest_blocker_cap
+        cap_info["max_confusion_score"] = max_confusion
+        explanations.append(
+            f"[최강 장애물 우선 원칙] 가장 높은 혼동 위험도 {max_confusion}%에 의해 "
+            f"등록 가능성 상한이 {strongest_blocker_cap}%로 강제 제한되었습니다. "
+            f"(보정 전 {pre_cap}% → 최종 {calibrated}%)"
+        )
+    # ──────────────────────────────────────────────────────────────────────────
 
     return calibrated, explanations, cap_info
 

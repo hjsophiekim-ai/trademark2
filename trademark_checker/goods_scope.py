@@ -439,6 +439,20 @@ def _evaluate_designated_item(item: dict, context: dict, designated_item: dict) 
     prior_classes = _extract_classes([designated_item.get("prior_class_no", "")])
     shared_classes = [value for value in prior_classes if value in selected_classes]
 
+    # 지정상품의 류가 출원 류와 다르면 해당 지정상품은 영향 없음
+    if prior_classes and not shared_classes:
+        return _build_overlap_payload(
+            bucket="excluded",
+            scope_bucket="irrelevant_candidates",
+            overlap_type="no_material_overlap",
+            overlap_basis="different_class",
+            score=0,
+            penalty_weight=0.0,
+            include=False,
+            reason="지정상품이 출원 대상과 다른 니스류에 속해 등록가능성 판단에 영향을 주지 않습니다.",
+            confidence="none",
+        )
+
     primary_overlap = sorted(set(selected_primary) & set(prior_primary))
     selected_related_overlap = sorted(set(selected_related) & set(prior_primary))
     prior_related_overlap = sorted(set(selected_primary) & set(prior_related))
@@ -711,6 +725,24 @@ def assess_class35_conflict_with_target(
 
 
 def classify_product_similarity(item: dict, context: dict) -> dict:
+    selected_classes = context["selected_nice_classes"]
+    item_classes = [int(value) for value in item.get("classes", []) if str(value).strip()]
+    shared_classes = [value for value in item_classes if value in selected_classes]
+
+    # 출원 류와 다른 류의 선행상표는 등록가능성 판단에 영향을 주지 않음
+    if not shared_classes:
+        return _build_overlap_payload(
+            bucket="excluded",
+            scope_bucket="irrelevant_candidates",
+            overlap_type="no_material_overlap",
+            overlap_basis="different_class",
+            score=0,
+            penalty_weight=0.0,
+            include=False,
+            reason="출원 대상과 다른 니스류에 속하는 선행상표로 등록가능성 판단에 영향을 주지 않습니다.",
+            confidence="none",
+        )
+
     designated_items = _prior_designated_items(item)
     if designated_items:
         candidates = [_evaluate_designated_item(item, context, designated_item) for designated_item in designated_items]
@@ -724,103 +756,21 @@ def classify_product_similarity(item: dict, context: dict) -> dict:
         if strongest["overlap_type"] != "no_material_overlap":
             return strongest
 
-    selected_classes = context["selected_nice_classes"]
-    selected_codes = context["selected_similarity_codes"]
-    selected_kind = context.get("selected_kind")
-    item_classes = [int(value) for value in item.get("classes", []) if str(value).strip()]
-    class35_conflict = assess_class35_conflict_with_target(
-        target_mark=context.get("trademark_name", ""),
-        target_kind=selected_kind,
-        target_classes=selected_classes,
-        target_primary_codes=context.get("selected_primary_codes", []),
-        target_related_codes=context.get("selected_related_codes", []),
-        target_retail_codes=context.get("selected_retail_codes", []),
-        prior_item=item,
-        prior_designated_items=designated_items,
-        context_tokens=context.get("tokens", set()),
-    )
-    if class35_conflict.get("applies"):
-        relation_level = class35_conflict.get("relation_level", "medium")
-        overlap_type = {
-            "very_strong": "class35_direct_retail_link",
-            "strong": "class35_strong_trade_link",
-            "medium": "class35_general_market_link",
-            "weak": "class35_weak_business_support",
-            "none": "class35_no_material_link",
-        }.get(str(relation_level), "class35_general_market_link")
-        penalty = float(class35_conflict.get("conflict_weight", 0.25))
-        include = overlap_type not in {"class35_no_material_link", "class35_weak_business_support"}
-        return _build_overlap_payload(
-            bucket="exception",
-            scope_bucket="related_market_candidates",
-            overlap_type=overlap_type,
-            overlap_basis="class35_conflict",
-            score=40 if overlap_type == "class35_direct_retail_link" else 32 if overlap_type == "class35_strong_trade_link" else 18,
-            penalty_weight=penalty,
-            include=include,
-            reason=str(class35_conflict.get("relation_reason", class35_conflict.get("explanation", ""))).strip()
-            or "제35류 지정서비스와 출원 대상의 거래상 관련성을 보조 검토했습니다.",
-            confidence="medium" if overlap_type in {"class35_direct_retail_link", "class35_strong_trade_link"} else "low",
-        )
-
-    shared_classes = [value for value in item_classes if value in selected_classes]
-    item_kind = infer_kind_from_classes(item_classes)
     item_explicit_code = str(item.get("similarityGroupCode", "") or "").strip().upper()
-    selected_keywords = context["selected_keywords"]
-    similarity_hint = int(item.get("similarity", 0))
-    mark_identity = item.get("mark_identity", "similar")
-
-    if shared_classes:
-        item_tokens = _item_code_tokens(item_explicit_code)
-        overlap_tokens = sorted(context["tokens"] & item_tokens)
-        return _build_overlap_payload(
-            bucket="same_class",
-            scope_bucket="same_class_candidates",
-            overlap_type="same_class_only",
-            overlap_basis="same_class_context" if overlap_tokens else "same_class_only",
-            score=24 if overlap_tokens else 12,
-            penalty_weight=0.18,
-            include=True,
-            reason=(
-                "같은 니스류이지만 item-level SC 정보가 없어 보조 검토군으로만 반영했습니다."
-                if not overlap_tokens
-                else f"같은 니스류이며 문맥상 표현 {', '.join(overlap_tokens[:3])}가 겹칩니다."
-            ),
-            confidence="low" if not overlap_tokens else "medium",
-        )
-
-    cross_kind = cross_kind_exception(
-        selected_kind=selected_kind,
-        item_kind=item_kind,
-        selected_classes=selected_classes,
-        item_classes=item_classes,
-        selected_codes=selected_codes,
-        item_code=item_explicit_code,
-        selected_keywords=selected_keywords,
-        similarity_hint=similarity_hint,
-        mark_identity=mark_identity,
-    )
-    if cross_kind.get("applies"):
-        return _build_overlap_payload(
-            bucket="exception",
-            scope_bucket="related_market_candidates",
-            overlap_type="no_material_overlap",
-            overlap_basis="cross_kind_exception",
-            score=int(cross_kind["score"]),
-            penalty_weight=float(cross_kind["penalty_weight"]),
-            include=True,
-            reason=cross_kind["reason"],
-            confidence="low",
-        )
-
+    item_tokens = _item_code_tokens(item_explicit_code)
+    overlap_tokens = sorted(context["tokens"] & item_tokens)
     return _build_overlap_payload(
-        bucket="excluded",
-        scope_bucket="irrelevant_candidates",
-        overlap_type="no_material_overlap",
-        overlap_basis="no_material_overlap",
-        score=0,
-        penalty_weight=0.0,
-        include=False,
-        reason="직접 코드, 근접 코드, 판매업-기초상품 연결, 동일 류 보조 요소가 모두 부족합니다.",
-        confidence="none",
+        bucket="same_class",
+        scope_bucket="same_class_candidates",
+        overlap_type="same_class_only",
+        overlap_basis="same_class_context" if overlap_tokens else "same_class_only",
+        score=24 if overlap_tokens else 12,
+        penalty_weight=0.18,
+        include=True,
+        reason=(
+            "같은 니스류이지만 item-level SC 정보가 없어 보조 검토군으로만 반영했습니다."
+            if not overlap_tokens
+            else f"같은 니스류이며 문맥상 표현 {', '.join(overlap_tokens[:3])}가 겹칩니다."
+        ),
+        confidence="low" if not overlap_tokens else "medium",
     )

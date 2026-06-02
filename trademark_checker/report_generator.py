@@ -93,6 +93,13 @@ def _safe_text(value: object) -> str:
     return str(value or "").replace("\n", " ").strip()
 
 
+def _safe_join(lst: object, sep: str = ", ") -> str:
+    """None이거나 비어있으면 빈 문자열, 아니면 모든 원소를 str 변환 후 join."""
+    if not lst:
+        return ""
+    return sep.join(str(v) for v in lst if v is not None)
+
+
 def _write_lines(pdf: KoreanPDF, width: float, lines: list[str]) -> None:
     for line in lines:
         if not line:
@@ -111,9 +118,9 @@ def _kind_label(kind: str | None) -> str:
 
 def _overlap_line(item: dict) -> str:
     strongest_item = item.get("strongest_matching_prior_item") or "없음"
-    strongest_codes = ", ".join(item.get("strongest_matching_prior_codes", []) or item.get("overlap_codes", [])) or "-"
+    strongest_codes = _safe_join(item.get("strongest_matching_prior_codes") or item.get("overlap_codes")) or "-"
     return (
-        f"selected primary codes: {', '.join(item.get('selected_primary_codes', [])) or '-'} / "
+        f"selected primary codes: {_safe_join(item.get('selected_primary_codes')) or '-'} / "
         f"strongest prior item: {strongest_item} / "
         f"strongest prior codes: {strongest_codes} / "
         f"overlap_type: {item.get('overlap_type', '-')} / "
@@ -257,7 +264,7 @@ def _render_top_priors(pdf: KoreanPDF, width: float, payload: dict, top_prior: l
 
 def _render_absolute_section(pdf: KoreanPDF, width: float, payload: dict) -> None:
     absolute = payload.get("absolute_refusal_analysis", {}) or payload.get("distinctiveness_analysis", {})
-    bases = ", ".join(absolute.get("refusal_bases", payload.get("absolute_refusal_bases", []))) or "-"
+    bases = _safe_join(absolute.get("refusal_bases") or payload.get("absolute_refusal_bases")) or "-"
     cap = absolute.get("probability_cap", payload.get("absolute_probability_cap", "-"))
     lines = [
         absolute.get("summary", payload.get("distinctiveness", "-")),
@@ -279,11 +286,11 @@ def _render_relative_section(pdf: KoreanPDF, width: float, payload: dict) -> Non
     score_explanation = payload.get("score_explanation", {})
     lines = [
         product_analysis.get("summary", "-"),
-        f"selected primary codes: {', '.join(overlap_analysis.get('selected_primary_codes', [])) or '-'}",
-        f"selected related codes: {', '.join(overlap_analysis.get('selected_related_codes', [])) or '-'}",
-        f"selected retail codes: {', '.join(overlap_analysis.get('selected_retail_codes', [])) or '-'}",
+        f"selected primary codes: {_safe_join(overlap_analysis.get('selected_primary_codes')) or '-'}",
+        f"selected related codes: {_safe_join(overlap_analysis.get('selected_related_codes')) or '-'}",
+        f"selected retail codes: {_safe_join(overlap_analysis.get('selected_retail_codes')) or '-'}",
         f"strongest prior item: {overlap_analysis.get('strongest_matching_prior_item') or '없음'}",
-        f"strongest prior codes: {', '.join(overlap_analysis.get('strongest_matching_prior_codes', [])) or '-'}",
+        f"strongest prior codes: {_safe_join(overlap_analysis.get('strongest_matching_prior_codes')) or '-'}",
         f"overlap_type: {overlap_analysis.get('strongest_overlap_type', '-')}",
         f"overlap_confidence: {overlap_analysis.get('overlap_confidence', '-')}",
         f"cap_reason: {overlap_analysis.get('cap_reason', score_explanation.get('cap_reason', '')) or '-'}",
@@ -304,9 +311,9 @@ def _render_search_debug_section(pdf: KoreanPDF, width: float, payload: dict) ->
         _write_lines(pdf, width, ["Note: Results may be incomplete or misleading due to engine failure."])
         pdf.ln(1)
 
-    pcodes = ", ".join(payload.get("selected_primary_codes", [])) or "-"
-    rcodes = ", ".join(payload.get("selected_related_codes", [])) or "-"
-    etcodes = ", ".join(payload.get("selected_retail_codes", [])) or "-"
+    pcodes = _safe_join(payload.get("selected_primary_codes")) or "-"
+    rcodes = _safe_join(payload.get("selected_related_codes")) or "-"
+    etcodes = _safe_join(payload.get("selected_retail_codes")) or "-"
     _write_lines(pdf, width, [
         f"selected_primary_codes: {pcodes}",
         f"selected_related_codes: {rcodes}",
@@ -339,7 +346,7 @@ def _render_search_debug_section(pdf: KoreanPDF, width: float, payload: dict) ->
         f"detail_parse_count: {detail_parse_count}",
         f"strongest_overlap_type: {ota.get('strongest_overlap_type', '-')}",
         f"strongest_prior_item: {ota.get('strongest_matching_prior_item') or '없음'}",
-        f"strongest_prior_codes: {', '.join(ota.get('strongest_matching_prior_codes', [])) or '-'}",
+        f"strongest_prior_codes: {_safe_join(ota.get('strongest_matching_prior_codes')) or '-'}",
         f"overlap_confidence: {ota.get('overlap_confidence', '-')}",
         f"mapping_failed_reason: {payload.get('mapping_failed_reason', '') or '-'}",
     ])
@@ -380,12 +387,12 @@ def _render_single_report(pdf: KoreanPDF, width: float, payload: dict, title: st
     summary_rows = [
         ("specific_product", payload.get("specific_product", "-") or "-"),
         ("kind", _kind_label(payload.get("selected_kind"))),
-        ("groups", ", ".join(payload.get("selected_groups", [])) or "-"),
-        ("subgroups", ", ".join(payload.get("selected_subgroups", [])) or "-"),
-        ("nice_classes", format_nice_classes(payload.get("selected_nice_classes", [])) or "-"),
-        ("selected_primary_codes", ", ".join(payload.get("selected_primary_codes", [])) or "-"),
-        ("selected_related_codes", ", ".join(payload.get("selected_related_codes", [])) or "-"),
-        ("selected_retail_codes", ", ".join(payload.get("selected_retail_codes", [])) or "-"),
+        ("groups", _safe_join(payload.get("selected_groups")) or "-"),
+        ("subgroups", _safe_join(payload.get("selected_subgroups")) or "-"),
+        ("nice_classes", format_nice_classes(payload.get("selected_nice_classes") or []) or "-"),
+        ("selected_primary_codes", _safe_join(payload.get("selected_primary_codes")) or "-"),
+        ("selected_related_codes", _safe_join(payload.get("selected_related_codes")) or "-"),
+        ("selected_retail_codes", _safe_join(payload.get("selected_retail_codes")) or "-"),
         ("registration_probability", f"{payload.get('score', 0)}% - {payload.get('score_label', '-')}"),
         ("cap_reason", score_explanation.get("cap_reason", "-") or "-"),
         ("stage2_cap_upper", f"{score_explanation.get('stage2_cap_upper', '-') }%"),
@@ -477,10 +484,10 @@ def generate_report_pdf(payload: dict) -> bytes:
         ("trademark_name", payload.get("trademark_name", "-")),
         ("trademark_type", payload.get("trademark_type", "-")),
         ("selected_kind", _kind_label(payload.get("selected_kind"))),
-        ("selected_groups", ", ".join(payload.get("selected_groups", [])) or "-"),
-        ("selected_subgroups", ", ".join(payload.get("selected_subgroups", [])) or "-"),
-        ("selected_nice_classes", format_nice_classes(payload.get("selected_nice_classes", [])) or "-"),
-        ("selected_primary_codes", ", ".join(payload.get("selected_primary_codes", [])) or "-"),
+        ("selected_groups", _safe_join(payload.get("selected_groups")) or "-"),
+        ("selected_subgroups", _safe_join(payload.get("selected_subgroups")) or "-"),
+        ("selected_nice_classes", format_nice_classes(payload.get("selected_nice_classes") or []) or "-"),
+        ("selected_primary_codes", _safe_join(payload.get("selected_primary_codes")) or "-"),
     ]:
         _write_lines(pdf, width, [f"{label}: {value}"])
     pdf.ln(2)

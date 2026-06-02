@@ -699,16 +699,7 @@ def detect_exact_mark_override(
             product_floor = int(floor_policy["weak"])
             overlap_type_override = "exact_same_mark_same_class_near_goods"
             confusion_floor = 90
-    elif has_trade_link:
-        product_floor = 45
-        overlap_type_override = "exact_same_mark_cross_class_trade_link"
-        confusion_floor = 88
-    else:
-        product_bucket = _canonical_overlap_type(product_context.get("overlap_type", product_context.get("bucket", "")))
-        if product_bucket in {"exact_primary_overlap", "related_primary_overlap"}:
-            product_floor = max(55, int(product_context.get("score", 0) or 0))
-            overlap_type_override = "exact_same_mark_related_goods"
-            confusion_floor = 90
+    # 다른 류 선행상표(has_trade_link 포함)는 override 대상에서 제외 — 같은 류만 영향
 
     should_override = bool(overlap_type_override)
     if not should_override:
